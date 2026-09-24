@@ -1,0 +1,10 @@
+<Solution>
+  <Folder Name="/src/" />
+  <Folder Name="/src/dotnet-mcp-toolkit/">
+    <Project Path="src/dotnet-mcp-toolkit/DotnetMcpToolkit.csproj" />
+  </Folder>
+  <Folder Name="/tests/" />
+  <Folder Name="/tests/dotnet-mcp-toolkit.Tests/">
+    <Project Path="tests/dotnet-mcp-toolkit.Tests/DotnetMcpToolkit.Tests.csproj" />
+  </Folder>
+</Solution>

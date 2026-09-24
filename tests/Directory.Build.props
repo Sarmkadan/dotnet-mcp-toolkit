@@ -1,0 +1,12 @@
+<Project>
+
+  <Import Project="$([MSBuild]::GetPathOfFileAbove('Directory.Build.props', '$(MSBuildThisFileDirectory)../'))" />
+
+  <PropertyGroup>
+    <!-- CA1707: underscores in test method names are the convention (Method_Scenario_Expectation). -->
+    <!-- CS1591: test projects do not need XML docs. -->
+    <NoWarn>$(NoWarn);CA1707;CS1591</NoWarn>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+</Project>
