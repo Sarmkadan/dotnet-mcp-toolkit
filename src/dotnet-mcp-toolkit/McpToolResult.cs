@@ -1,3 +1,5 @@
+using System.Text.Json;
+
 namespace DotnetMcpToolkit;
 
 /// <summary>
@@ -17,7 +19,7 @@ public sealed record McpToolResult(IReadOnlyList<McpContent> Content, bool IsErr
     /// <param name="text">The text payload.</param>
     public static McpToolResult Text(string text)
     {
-        throw new NotImplementedException();
+        return new McpToolResult([new McpContent("text", text)]);
     }
 
     /// <summary>
@@ -26,7 +28,7 @@ public sealed record McpToolResult(IReadOnlyList<McpContent> Content, bool IsErr
     /// <param name="message">Human-readable error message for the model.</param>
     public static McpToolResult Error(string message)
     {
-        throw new NotImplementedException();
+        return new McpToolResult([new McpContent("text", message)], IsError: true);
     }
 
     /// <summary>
@@ -36,7 +38,8 @@ public sealed record McpToolResult(IReadOnlyList<McpContent> Content, bool IsErr
     /// <param name="value">Value to serialize.</param>
     public static McpToolResult Json<T>(T value)
     {
-        throw new NotImplementedException();
+        var json = JsonSerializer.Serialize(value);
+        return new McpToolResult([new McpContent("text", json)]);
     }
 }
 

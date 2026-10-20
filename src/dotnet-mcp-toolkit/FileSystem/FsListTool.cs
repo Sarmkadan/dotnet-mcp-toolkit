@@ -1,0 +1,149 @@
+using System.Text.Json;
+
+namespace DotnetMcpToolkit.FileSystem;
+
+/// <summary>
+/// MCP tool <c>fs_list</c>: lists files and directories inside the sandbox.
+/// </summary>
+public sealed class FsListTool : IMcpTool
+{
+    private static readonly JsonElement _inputSchema = JsonDocument.Parse("""
+        {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Relative path to list (default \".\")"
+                },
+                "recursive": {
+                    "type": "boolean",
+                    "description": "Whether to list recursively (default false)"
+                }
+            }
+        }
+        """).RootElement.Clone();
+
+    private readonly PathSandbox _sandbox;
+
+    /// <summary>
+    /// Creates the tool bound to the given <paramref name="sandbox"/>.
+    /// </summary>
+    /// <param name="sandbox">The sandbox that constrains accessible paths.</param>
+    public FsListTool(PathSandbox sandbox)
+    {
+        ArgumentNullException.ThrowIfNull(sandbox);
+        _sandbox = sandbox;
+    }
+
+    /// <inheritdoc />
+    public string Name => "fs_list";
+
+    /// <inheritdoc />
+    public string Description => "Lists files and directories inside the sandbox.";
+
+    /// <inheritdoc />
+    public JsonElement InputSchema => _inputSchema;
+
+    /// <inheritdoc />
+    public Task<McpToolResult> InvokeAsync(JsonElement? arguments, CancellationToken cancellationToken = default)
+    {
+        var path = ToolArguments.GetString(arguments, "path", ".") ?? ".";
+        var recursive = ToolArguments.GetBoolean(arguments, "recursive");
+
+        string resolved;
+        try
+        {
+            resolved = _sandbox.Resolve(path);
+        }
+        catch (UnauthorizedAccessException ex)
+        {
+            return Task.FromResult(McpToolResult.Error(ex.Message));
+        }
+
+        if (!Directory.Exists(resolved))
+        {
+            return Task.FromResult(McpToolResult.Error($"Directory not found: {path}"));
+        }
+
+        var option = recursive ? SearchOption.AllDirectories : SearchOption.TopDirectoryOnly;
+        var entries = new List<object>();
+        var truncated = false;
+        const int maxEntries = 2000;
+
+        try
+        {
+            foreach (var entry in Directory.EnumerateFileSystemEntries(resolved, "*", option))
+            {
+                if (entries.Count >= maxEntries)
+                {
+                    truncated = true;
+                    break;
+                }
+
+                cancellationToken.ThrowIfCancellationRequested();
+
+                string relativePath;
+                try
+                {
+                    relativePath = _sandbox.MakeRelative(entry);
+                }
+                catch
+                {
+                    continue;
+                }
+
+                try
+                {
+                    if (File.Exists(entry))
+                    {
+                        var info = new FileInfo(entry);
+                        entries.Add(new
+                        {
+                            path = relativePath,
+                            type = "file",
+                            size = info.Length,
+                            modified = info.LastWriteTimeUtc.ToString("o"),
+                        });
+                    }
+                    else if (Directory.Exists(entry))
+                    {
+                        var info = new DirectoryInfo(entry);
+                        entries.Add(new
+                        {
+                            path = relativePath,
+                            type = "dir",
+                            modified = info.LastWriteTimeUtc.ToString("o"),
+                        });
+                    }
+                }
+                catch
+                {
+                    // Skip entries whose metadata cannot be read.
+                    continue;
+                }
+            }
+        }
+        catch (DirectoryNotFoundException ex)
+        {
+            return Task.FromResult(McpToolResult.Error(ex.Message));
+        }
+
+        entries.Sort((a, b) => string.Compare(
+            GetPath(a), GetPath(b), StringComparison.Ordinal));
+
+        object result = truncated
+            ? new { entries, truncated = true }
+            : (object)new { entries };
+
+        return Task.FromResult(McpToolResult.Json(result));
+    }
+
+    private static string GetPath(object entry)
+    {
+        // Anonymous types have a "path" property accessible via reflection or JsonSerializer.
+        // Use a simple approach: serialize and read.
+        var json = JsonSerializer.Serialize(entry);
+        using var doc = JsonDocument.Parse(json);
+        return doc.RootElement.GetProperty("path").GetString() ?? string.Empty;
+    }
+}
