@@ -189,4 +189,178 @@ public sealed class SqlStatementGuardTests
     {
         Assert.ThrowsAny<ArgumentException>(() => SqlStatementGuard.EnsureAllowed(sql!, allowWrites: true));
     }
+
+    [Theory]
+    [InlineData("SELECT 1")]
+    [InlineData("  select * from t")]
+    [InlineData("WITH x AS (SELECT 1) SELECT * FROM x")]
+    [InlineData("EXPLAIN SELECT 1")]
+    [InlineData("-- comment\nSELECT 1")]
+    [InlineData("/* block */ SELECT 1")]
+    [InlineData("VALUES (1)")]
+    [InlineData("SHOW TABLES")]
+    public void Classify_ReadStatements_ReturnsRead(string sql)
+    {
+        var kind = SqlStatementGuard.Classify(sql);
+
+        Assert.Equal(SqlStatementKind.Read, kind);
+    }
+
+    [Theory]
+    [InlineData("INSERT INTO t VALUES (1)")]
+    [InlineData("UPDATE t SET a = 1")]
+    [InlineData("DELETE FROM t")]
+    [InlineData("MERGE INTO t USING s ON 1 = 1")]
+    [InlineData("REPLACE INTO t VALUES (1)")]
+    [InlineData("TRUNCATE t")]
+    [InlineData("WITH x AS (SELECT 1) INSERT INTO t SELECT * FROM x")]
+    [InlineData("PRAGMA journal_mode = WAL")]
+    [InlineData("PRAGMA table_info(t)")]
+    [InlineData("EXEC sp_who")]
+    public void Classify_WriteStatements_ReturnsWrite(string sql)
+    {
+        var kind = SqlStatementGuard.Classify(sql);
+
+        Assert.Equal(SqlStatementKind.Write, kind);
+    }
+
+    [Theory]
+    [InlineData("CREATE TABLE t (a INT)")]
+    [InlineData("ALTER TABLE t ADD COLUMN b INT")]
+    [InlineData("DROP TABLE t")]
+    [InlineData("GRANT SELECT ON t TO u")]
+    [InlineData("ATTACH DATABASE 'x.db' AS x")]
+    [InlineData("VACUUM")]
+    public void Classify_DdlStatements_ReturnsDdl(string sql)
+    {
+        var kind = SqlStatementGuard.Classify(sql);
+
+        Assert.Equal(SqlStatementKind.Ddl, kind);
+    }
+
+    [Theory]
+    [InlineData("FOO BAR")]
+    [InlineData("123")]
+    [InlineData(";")]
+    public void Classify_Garbage_ReturnsUnknown(string sql)
+    {
+        var kind = SqlStatementGuard.Classify(sql);
+
+        Assert.Equal(SqlStatementKind.Unknown, kind);
+    }
+
+    [Theory]
+    [InlineData("SELECT ';' FROM t")]
+    [InlineData("SELECT 'it''s; fine'")]
+    [InlineData("SELECT \"a;b\" FROM t")]
+    public void ContainsMultipleStatements_SemicolonInStringLiteral_ReturnsFalse(string sql)
+    {
+        var result = SqlStatementGuard.ContainsMultipleStatements(sql);
+
+        Assert.False(result);
+    }
+
+    [Theory]
+    [InlineData("SELECT 1 -- ; DROP TABLE t")]
+    [InlineData("SELECT 1 /* ; */")]
+    public void ContainsMultipleStatements_SemicolonInComment_ReturnsFalse(string sql)
+    {
+        var result = SqlStatementGuard.ContainsMultipleStatements(sql);
+
+        Assert.False(result);
+    }
+
+    [Theory]
+    [InlineData("SELECT 1;")]
+    [InlineData("SELECT 1;   \n-- done")]
+    public void ContainsMultipleStatements_TrailingSemicolon_ReturnsFalse(string sql)
+    {
+        var result = SqlStatementGuard.ContainsMultipleStatements(sql);
+
+        Assert.False(result);
+    }
+
+    [Theory]
+    [InlineData("SELECT 1; DROP TABLE t")]
+    [InlineData("SELECT 1;SELECT 2")]
+    public void ContainsMultipleStatements_TwoStatements_ReturnsTrue(string sql)
+    {
+        var result = SqlStatementGuard.ContainsMultipleStatements(sql);
+
+        Assert.True(result);
+    }
+
+    [Theory]
+    [InlineData("SELECT * FROM t FOR UPDATE")]
+    [InlineData("SELECT * FROM t FOR SHARE")]
+    public void IsReadOnly_SelectForUpdate_ReturnsFalse(string sql)
+    {
+        var result = SqlStatementGuard.IsReadOnly(sql);
+
+        Assert.False(result);
+    }
+
+    [Fact]
+    public void IsReadOnly_SelectInto_ReturnsFalse()
+    {
+        var result = SqlStatementGuard.IsReadOnly("SELECT * INTO new_table FROM t");
+
+        Assert.False(result);
+    }
+
+    [Fact]
+    public void IsReadOnly_PlainSelect_ReturnsTrue()
+    {
+        var result = SqlStatementGuard.IsReadOnly("SELECT * FROM t");
+
+        Assert.True(result);
+    }
+
+    [Fact]
+    public void IsReadOnly_SelectThenDrop_ReturnsFalse()
+    {
+        var result = SqlStatementGuard.IsReadOnly("SELECT 1; DROP TABLE t");
+
+        Assert.False(result);
+    }
+
+    [Fact]
+    public void EnsureAllowed_WriteWithoutAllowWrites_ThrowsInvalidOperationException()
+    {
+        var ex = Assert.Throws<InvalidOperationException>(() => SqlStatementGuard.EnsureAllowed("DELETE FROM t", allowWrites: false));
+
+        Assert.Contains("read-only", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void EnsureAllowed_WriteWithAllowWrites_DoesNotThrow()
+    {
+        var exception = Record.Exception(() => SqlStatementGuard.EnsureAllowed("DELETE FROM t", allowWrites: true));
+
+        Assert.Null(exception);
+    }
+
+    [Fact]
+    public void EnsureAllowed_ReadWithoutAllowWrites_DoesNotThrow()
+    {
+        var exception = Record.Exception(() => SqlStatementGuard.EnsureAllowed("SELECT * FROM t", allowWrites: false));
+
+        Assert.Null(exception);
+    }
+
+    [Theory]
+    [InlineData("   ")]
+    [InlineData("\t\n")]
+    public void EnsureAllowed_Whitespace_ThrowsArgumentException(string sql)
+    {
+        Assert.Throws<ArgumentException>(() => SqlStatementGuard.EnsureAllowed(sql, allowWrites: false));
+    }
+
+    [Fact]
+    public void Classify_UnterminatedStringLiteral_DoesNotThrow()
+    {
+        var kind = SqlStatementGuard.Classify("SELECT 'abc");
+
+        Assert.Equal(SqlStatementKind.Unknown, kind);
+    }
 }
