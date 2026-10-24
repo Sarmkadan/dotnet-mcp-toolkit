@@ -19,6 +19,10 @@ namespace DotnetMcpToolkit;
 /// </example>
 public sealed class McpServerBuilder
 {
+    private readonly string _name;
+    private readonly string _version;
+    private readonly List<IMcpTool> _tools = [];
+
     /// <summary>
     /// Creates a builder for a server with the given identity.
     /// </summary>
@@ -28,16 +32,30 @@ public sealed class McpServerBuilder
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
         ArgumentException.ThrowIfNullOrWhiteSpace(version);
-        throw new NotImplementedException();
+
+        _name = name;
+        _version = version;
     }
+
+    /// <summary>
+    /// Gets the tools registered so far, in registration order. Use it to inspect the builder before <see cref="Build"/>.
+    /// </summary>
+    public IReadOnlyList<IMcpTool> Tools => _tools;
 
     /// <summary>
     /// Registers a custom tool.
     /// </summary>
     /// <param name="tool">The tool to expose.</param>
+    /// <returns>This builder, for chaining.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="tool"/> is <see langword="null"/>.</exception>
+    /// <exception cref="ArgumentException">The tool's <see cref="IMcpTool.Name"/> is null or whitespace.</exception>
     public McpServerBuilder AddTool(IMcpTool tool)
     {
-        throw new NotImplementedException();
+        ArgumentNullException.ThrowIfNull(tool);
+        ArgumentException.ThrowIfNullOrWhiteSpace(tool.Name);
+
+        _tools.Add(tool);
+        return this;
     }
 
     /// <summary>
@@ -83,26 +101,20 @@ public sealed class McpServerBuilder
     /// <summary>
     /// Builds the server. Throws if two registered tools share a name.
     /// </summary>
+    /// <returns>A server exposing a snapshot of the tools registered so far.</returns>
+    /// <exception cref="InvalidOperationException">Two registered tools share the same name.</exception>
     public IMcpServer Build()
     {
-        throw new NotImplementedException();
+        var names = new HashSet<string>(StringComparer.Ordinal);
+
+        foreach (var tool in _tools)
+        {
+            if (!names.Add(tool.Name))
+            {
+                throw new InvalidOperationException($"Duplicate tool name '{tool.Name}'");
+            }
+        }
+
+        return new McpServer(_name, _version, _tools.ToArray());
     }
-}
-
-/// <summary>
-/// Database engines supported by the database tool pack.
-/// </summary>
-public enum DatabaseProvider
-{
-    /// <summary>SQLite via Microsoft.Data.Sqlite.</summary>
-    Sqlite,
-
-    /// <summary>PostgreSQL via Npgsql.</summary>
-    PostgreSql,
-
-    /// <summary>SQL Server via Microsoft.Data.SqlClient.</summary>
-    SqlServer,
-
-    /// <summary>MySQL / MariaDB via MySqlConnector.</summary>
-    MySql,
 }
