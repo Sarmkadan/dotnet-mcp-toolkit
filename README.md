@@ -37,15 +37,7 @@ await using var transport = new StdioTransport(
 await server.RunAsync(transport);
 ```
 
-Register the compiled binary in your MCP client, e.g. Claude Desktop `claude_desktop_config.json`:
-
-```json
-{
-  "mcpServers": {
-    "my-tools": { "command": "/path/to/MyTools" }
-  }
-}
-```
+Register the published assembly in your MCP client; see [Client configuration](#client-configuration).
 
 ## Tool packs
 
@@ -265,9 +257,124 @@ dotnet add package DotnetMcpToolkit
 | `DockerOptions` | Docker pack configuration: daemon endpoint and the `AllowExec` opt-in |
 | `PathSandbox` | Confines filesystem tool paths to a root directory |
 
+## Security model
+
+The packs enforce their limits in code, not through the model's instructions. The defaults are the safe choice; the opt-ins in the table are the only switches that widen access.
+
+| Pack | Default | Opt-in | How it is enforced |
+|------|---------|--------|--------------------|
+| Filesystem | Reads, search and writes, confined to `root`. Writes are on unless `readOnly: true`. | `readOnly: true` removes `fs_write_file`. | `PathSandbox.Resolve` joins the path to `root`, normalises `..` and rejects any result outside it. Each existing segment is checked for symbolic links whose final target lies outside `root`; dangling and circular links are rejected. Caps: `fs_read_file` refuses files over 10 MB unless `offset` or `limit` is given, and rejects binary files; `fs_search` skips files over 5 MB and binary files, does not follow links, and fails a regex that runs longer than 1 second; `fs_list` stops at 2000 entries. `fs_write_file` has no size cap. |
+| Database | Read-only: `allowWrites` is `false`. | `allowWrites: true` lets `sql_query` run writes and DDL. | `SqlStatementGuard` classifies the SQL text before it runs. Read-only mode accepts one statement that starts with `SELECT`, `WITH`, `EXPLAIN`, `SHOW`, `DESCRIBE`, `VALUES` or a `PRAGMA` without assignment, and rejects `INTO`, `FOR UPDATE`, `FOR SHARE`, `LOCK`, a second statement and any write keyword. SQL the guard cannot read, such as dollar quotes or backslashes in literals, is rejected. Values are bound as `@name` parameters, never spliced into the text. `sql_query` returns at most `maxRows` rows (default 500, max 5000) and times out after 30 seconds. `sql_explain` always applies the read-only check. |
+| Git | Read-only tools: `git_status`, `git_log`, `git_diff`, `git_blame`. | None; the pack has no write tools. | `git` gets its arguments through `ProcessStartInfo.ArgumentList`, never a shell. `GitCommandRunner` rejects `--upload-pack`, `--exec` and `-c core.*` config overrides. Paths follow `--`. Only `git_diff` takes a ref: it must match `^[A-Za-z0-9_./~^@{}-]+$` and must not start with `-`; it also passes `--no-ext-diff`. `GIT_TERMINAL_PROMPT=0` stops git from waiting on a credential prompt. |
+| Docker | `docker_ps`, `docker_logs`, `docker_inspect`. | `DockerOptions.AllowExec = true` adds `docker_exec`. | The `docker` CLI runs through `ArgumentList` with no shell. Container names must match `^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$`; `docker_inspect` targets have their own pattern, up to 256 characters. `docker_exec` takes a command array run without a shell, an absolute `workdir`, a validated `user`, and a `timeoutSeconds` from 1 to 600 (default 60). Other docker commands are killed after 60 seconds and report exit code 124. |
+
+The read-only SQL check is textual and does not depend on the provider. The planned PostgreSQL, SQL Server and MySQL packages are not implemented, so the check has only been tested against SQLite.
+
+### What this does NOT protect against
+
+- **A write-capable connection with `allowWrites: true`.** The read-only and single-statement checks are skipped, so anything the model writes runs. Give the read tools a database user that only has read rights.
+- **A filesystem `root` of `/` or a home directory.** The sandbox then covers everything under it. Reads have no name-based denylist, so `.env` files and keys inside `root` can be read and searched. Keep secrets out of the root.
+- **Docker daemon access.** Access to the socket is root-equivalent on the host, and the server does not filter what the daemon exposes. Point it only at a daemon you would trust with root.
+- **Races with the filesystem.** Symbolic link checks run at call time. Another process that swaps links inside `root` during a call can race them, so the sandbox is not a defence against a hostile local process.
+- **Untrusted repositories.** Git applies the repository's own configuration; only `git_diff` passes `--no-ext-diff`. Do not point `AddGit` at a repository you do not trust.
+- **Sensitive output.** Results are not redacted. File contents, logs and query rows reach the model and the client as they are. The stdio transport has no login either: whoever launches the process controls it.
+
+## Client configuration
+
+Every client starts the server as a child process and talks to it over stdin and stdout. Publish the app first (`dotnet publish -c Release -o /path/to/publish`) so clients can run the DLL directly.
+
+### Claude Desktop
+
+Edit `claude_desktop_config.json` (macOS: `~/Library/Application Support/Claude/`, Windows: `%APPDATA%\Claude\`), then restart the app:
+
+```json
+{
+  "mcpServers": {
+    "my-tools": {
+      "command": "dotnet",
+      "args": ["/path/to/publish/MyTools.dll"]
+    }
+  }
+}
+```
+
+### Claude Code
+
+```bash
+claude mcp add my-tools -- dotnet /path/to/publish/MyTools.dll
+claude mcp list
+```
+
+Run `claude mcp list` to check that the server connects.
+
+### VS Code (GitHub Copilot)
+
+Add `.vscode/mcp.json` to the workspace. VS Code uses the `servers` key, not `mcpServers`:
+
+```json
+{
+  "servers": {
+    "my-tools": {
+      "type": "stdio",
+      "command": "dotnet",
+      "args": ["/path/to/publish/MyTools.dll"]
+    }
+  }
+}
+```
+
+### Docker
+
+The container publishes no ports, because stdio runs over the container's stdin and stdout. The app targets net9.0 and is framework-dependent, so the runtime image is enough:
+
+```dockerfile
+FROM mcr.microsoft.com/dotnet/runtime:9.0
+WORKDIR /app
+COPY publish/ .
+ENTRYPOINT ["dotnet", "MyTools.dll"]
+```
+
+Build the image with `docker build -t my-tools .`, then point the client at `docker run`:
+
+```json
+{
+  "mcpServers": {
+    "my-tools": {
+      "command": "docker",
+      "args": ["run", "-i", "--rm", "-v", "/srv/repo:/data:ro", "my-tools"]
+    }
+  }
+}
+```
+
+Use `-i` without `-t`, so stdin stays open and no TTY alters the protocol. Use `--rm` so the container is removed when the session ends. Do not add `-p`. The sample mounts a repository read-only at `/data`, so set the filesystem `root` in code to `/data`.
+
+## Troubleshooting
+
+- **The client shows "unexpected token" or disconnects during startup.** Something wrote to stdout, which carries only JSON-RPC over stdio. Log with `Console.Error.WriteLine`, never `Console.WriteLine`. Point the client at the published DLL too, because `dotnet run` can print build output to stdout.
+- **"Path escapes sandbox root".** Relative paths such as `src/Program.cs` resolve against `root`. `..` segments are normalised first, so `../secrets` is rejected. An absolute path is accepted only when it already lies inside `root`: `/srv/repo/src/Program.cs` works, `/etc/hosts` does not. A symbolic link whose target is outside `root` is rejected as well.
+- **"Read-only mode only allows a single statement that reads data".** The tool refused a write, DDL, a second statement, `INTO`, `FOR UPDATE` or `LOCK`. Rewrite the SQL as one read, or set `allowWrites: true` if the connection is meant to write. The guard also refuses SQL it cannot read, such as `$$` dollar quotes or backslashes inside literals; use standard quoting instead.
+- **"docker executable not found".** The `docker` CLI is not on the `PATH` the client gives the server. Desktop clients often start with a shorter `PATH` than your shell. Add an `env` entry with a `PATH` that includes the docker directory to the client config, and check that `docker version` works for the same user. If the daemon is not the default one, pass its endpoint to `AddDocker("unix:///var/run/docker.sock")`, or set `DOCKER_HOST`.
+- **"Provider X requires the DotnetMcpToolkit.Database.X package".** Only SQLite ships in `DotnetMcpToolkit`. `AddDatabase` throws this `NotSupportedException` for `PostgreSql`, `SqlServer` and `MySql`. Use `DatabaseProvider.Sqlite`, or pass your own `IDbConnectionFactory` to `AddDatabase`. The provider packages are planned and not yet available.
+
 ## Status
 
-Filesystem, git and docker packs and the SQLite database pack are implemented. PostgreSQL, SQL Server and MySQL providers are planned as separate packages, and Streamable HTTP is planned. Version 0.1.0; the public API may still change before 1.0. See [CLAUDE.md](CLAUDE.md) for architecture notes.
+Implemented:
+
+- Filesystem pack: `fs_list`, `fs_read_file`, `fs_write_file`, `fs_search`.
+- Git pack: `git_status`, `git_log`, `git_diff`, `git_blame`.
+- Docker pack: `docker_ps`, `docker_logs`, `docker_inspect`, and `docker_exec` (opt-in).
+- Database pack, SQLite only: `sql_query`, `sql_schema`, `sql_explain`.
+- The builder, custom tools and the stdio transport.
+
+No method in `src/` throws `NotImplementedException`.
+
+Pending:
+
+- PostgreSQL, SQL Server and MySQL providers: planned as separate `DotnetMcpToolkit.Database.*` packages. The `DatabaseProvider` values exist, but `AddDatabase` throws for them today.
+- Streamable HTTP transport: planned. `StdioTransport` is currently the only `IMcpTransport`.
+
+Version 0.1.0; the public API may still change before 1.0. See [CLAUDE.md](CLAUDE.md) for architecture notes.
 
 ## Contributing
 
