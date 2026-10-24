@@ -269,6 +269,42 @@ var server = McpServerBuilder.FromOptions(options).Build();
 
 `FromOptions` calls `McpServerOptions.Validate()` first, so a missing `Root`, a `Root` that is not a directory, or a limit outside its range fails at startup with an `ArgumentException` or `ArgumentOutOfRangeException` that names the property. Each pack's `Add*` overload takes the same options class, for example `AddFileSystem(FileSystemOptions)`.
 
+## Hosting with DI
+
+`DotnetMcpToolkit.DependencyInjection` registers the server in a Generic Host or Worker Service. `AddMcpServer` binds the `Mcp` section and validates it, and `AddStdioTransport` adds the stdio transport. `McpServerRunner` runs the server, and a `BackgroundService` can call it in one line.
+
+```json
+{
+  "Mcp": {
+    "Name": "my-tools",
+    "Version": "1.0.0",
+    "FileSystem": { "Root": "/srv/repo", "ReadOnly": true }
+  }
+}
+```
+
+```csharp
+using DotnetMcpToolkit.DependencyInjection;
+
+var builder = Host.CreateApplicationBuilder(args);
+
+// stdout carries the JSON-RPC stream, so the default console logger must not write there.
+builder.Logging.ClearProviders();
+
+builder.Services.AddMcpServer(builder.Configuration.GetSection("Mcp")).AddStdioTransport();
+builder.Services.AddSingleton<McpServerRunner>();
+builder.Services.AddHostedService<McpWorker>();
+
+await builder.Build().RunAsync();
+
+public sealed class McpWorker(McpServerRunner runner) : BackgroundService
+{
+    protected override Task ExecuteAsync(CancellationToken stoppingToken) => runner.RunAsync(stoppingToken);
+}
+```
+
+An invalid `Mcp` section fails when `IMcpServer` is resolved or when the host starts, with an exception that names the property. `AddMcpServer(name, version, configure)` and `AddMcpServer(Action<McpServerOptions>)` are the code-only alternatives.
+
 ## API overview
 
 | Type | Purpose |
@@ -283,6 +319,8 @@ var server = McpServerBuilder.FromOptions(options).Build();
 | `DockerOptions` | Docker pack configuration: daemon endpoint, the `AllowExec` opt-in and timeouts |
 | `McpServerOptions` (`DotnetMcpToolkit.Options`) | Root configuration for `McpServerBuilder.FromOptions`; holds one options class per pack |
 | `PathSandbox` | Confines filesystem tool paths to a root directory |
+| `ServiceCollectionExtensions` (`DotnetMcpToolkit.DependencyInjection`) | `AddMcpServer` and `AddStdioTransport` for Generic Host registration |
+| `McpServerRunner` | Runs an `IMcpServer` over an `IMcpTransport`; wrap it in a `BackgroundService` |
 
 ## Security model
 
