@@ -58,75 +58,88 @@ public sealed class FsReadFileTool : IMcpTool
     /// <inheritdoc />
     public async Task<McpToolResult> InvokeAsync(JsonElement? arguments, CancellationToken cancellationToken = default)
     {
-        var path = ToolArguments.GetString(arguments, "path");
-
-        if (string.IsNullOrWhiteSpace(path))
+        if (ToolArgumentValidation.RequireObjectArguments(arguments) is { } argumentError)
         {
-            return McpToolResult.Error("Missing required argument: path");
+            return argumentError;
         }
 
-        var offset = ToolArguments.GetInt32(arguments, "offset");
-        var limit = ToolArguments.GetInt32(arguments, "limit");
-
-        if (limit > _maxLimit)
+        if (ToolArgumentValidation.RequirePath(arguments, "path", out var path) is { } pathError)
         {
-            limit = _maxLimit;
+            return pathError;
         }
 
-        string resolved;
+        if (ToolArgumentValidation.OptionalInt32(arguments, "offset", 1, int.MaxValue, 1, out var startLine) is { } offsetError)
+        {
+            return offsetError;
+        }
+
+        if (ToolArgumentValidation.OptionalInt32(arguments, "limit", 1, _maxLimit, _maxLimit, out var maxLines) is { } limitError)
+        {
+            return limitError;
+        }
+
+        var hasRangeArgs = ToolArgumentValidation.HasArgument(arguments, "offset") ||
+            ToolArgumentValidation.HasArgument(arguments, "limit");
+
         try
         {
-            resolved = _sandbox.Resolve(path);
-        }
-        catch (UnauthorizedAccessException ex)
-        {
-            return McpToolResult.Error(ex.Message);
-        }
-
-        if (!File.Exists(resolved))
-        {
-            return McpToolResult.Error($"File not found: {path}");
-        }
-
-        var fileInfo = new FileInfo(resolved);
-        var hasRangeArgs = offset.HasValue || limit.HasValue;
-
-        if (fileInfo.Length > _maxFileSizeBytes && !hasRangeArgs)
-        {
-            return McpToolResult.Error(
-                $"File is {fileInfo.Length / (1024 * 1024):F1} MB, exceeding the 10 MB limit. " +
-                "Use offset and limit to read a portion.");
-        }
-
-        // Binary detection: check first 8 KB for NUL bytes.
-        if (await IsBinaryAsync(resolved, cancellationToken).ConfigureAwait(false))
-        {
-            return McpToolResult.Error("binary file");
-        }
-
-        var lines = new List<string>();
-        var lineNumber = 0;
-        var startLine = offset ?? 1;
-        var maxLines = limit ?? _maxLimit;
-
-        await foreach (var line in File.ReadLinesAsync(resolved, Encoding.UTF8, cancellationToken).ConfigureAwait(false))
-        {
-            lineNumber++;
-
-            if (lineNumber < startLine)
+            string resolved;
+            try
             {
-                continue;
+                resolved = _sandbox.Resolve(path);
+            }
+            catch (UnauthorizedAccessException ex)
+            {
+                return McpToolResult.Error(ex.Message);
             }
 
-            if (lines.Count >= maxLines)
+            if (!File.Exists(resolved))
             {
-                break;
+                return McpToolResult.Error($"File not found: {path}");
             }
 
-            lines.Add(line);
-        }
+            var fileInfo = new FileInfo(resolved);
 
-        return McpToolResult.Text(string.Join('\n', lines));
+            if (fileInfo.Length > _maxFileSizeBytes && !hasRangeArgs)
+            {
+                return McpToolResult.Error(
+                    $"File is {fileInfo.Length / (1024 * 1024):F1} MB, exceeding the 10 MB limit. " +
+                    "Use offset and limit to read a portion.");
+            }
+
+            // Binary detection: check first 8 KB for NUL bytes.
+            if (await IsBinaryAsync(resolved, cancellationToken).ConfigureAwait(false))
+            {
+                return McpToolResult.Error("binary file");
+            }
+
+            var lines = new List<string>();
+            var lineNumber = 0;
+
+            await foreach (var line in File.ReadLinesAsync(resolved, Encoding.UTF8, cancellationToken).ConfigureAwait(false))
+            {
+                lineNumber++;
+
+                if (lineNumber < startLine)
+                {
+                    continue;
+                }
+
+                if (lines.Count >= maxLines)
+                {
+                    break;
+                }
+
+                lines.Add(line);
+            }
+
+            return McpToolResult.Text(string.Join('\n', lines));
+        }
+        catch (Exception ex) when (ex is UnauthorizedAccessException or IOException)
+        {
+            // FileNotFoundException and DirectoryNotFoundException are IOExceptions, so a file removed mid-read lands here too.
+            return McpToolResult.Error($"Cannot read '{path}': {ex.Message}");
+        }
     }
 
     private static async Task<bool> IsBinaryAsync(string filePath, CancellationToken cancellationToken)

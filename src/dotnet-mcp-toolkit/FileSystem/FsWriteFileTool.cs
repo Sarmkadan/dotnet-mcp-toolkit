@@ -59,63 +59,84 @@ public sealed class FsWriteFileTool : IMcpTool
     /// <inheritdoc />
     public async Task<McpToolResult> InvokeAsync(JsonElement? arguments, CancellationToken cancellationToken = default)
     {
-        var path = ToolArguments.GetString(arguments, "path");
-
-        if (string.IsNullOrWhiteSpace(path))
+        if (ToolArgumentValidation.RequireObjectArguments(arguments) is { } argumentError)
         {
-            return McpToolResult.Error("Missing required argument: path");
+            return argumentError;
         }
 
-        var content = ToolArguments.GetString(arguments, "content");
-
-        if (content is null)
+        if (ToolArgumentValidation.RequirePath(arguments, "path", out var path) is { } pathError)
         {
-            return McpToolResult.Error("Missing required argument: content");
+            return pathError;
         }
 
-        var createDirectories = ToolArguments.GetBoolean(arguments, "createDirectories", defaultValue: true);
-        var overwrite = ToolArguments.GetBoolean(arguments, "overwrite", defaultValue: true);
+        if (path.EndsWith('/') || path.EndsWith('\\'))
+        {
+            return McpToolResult.Error("Argument 'path' must be a file, not a directory path (it ends with '/' or '\\')");
+        }
 
-        string resolved;
+        if (ToolArgumentValidation.RequireString(arguments, "content", out var content, allowEmpty: true) is { } contentError)
+        {
+            return contentError;
+        }
+
+        if (ToolArgumentValidation.OptionalBoolean(arguments, "createDirectories", true, out var createDirectories) is { } createError)
+        {
+            return createError;
+        }
+
+        if (ToolArgumentValidation.OptionalBoolean(arguments, "overwrite", true, out var overwrite) is { } overwriteError)
+        {
+            return overwriteError;
+        }
+
         try
         {
-            resolved = _sandbox.Resolve(path);
-        }
-        catch (UnauthorizedAccessException ex)
-        {
-            return McpToolResult.Error(ex.Message);
-        }
-
-        if (Directory.Exists(resolved))
-        {
-            return McpToolResult.Error($"Path is a directory: {path}");
-        }
-
-        if (File.Exists(resolved) && !overwrite)
-        {
-            return McpToolResult.Error($"File already exists and overwrite is false: {path}");
-        }
-
-        var parent = Path.GetDirectoryName(resolved);
-
-        if (parent is not null && !Directory.Exists(parent))
-        {
-            if (!createDirectories)
+            string resolved;
+            try
             {
-                return McpToolResult.Error($"Parent directory does not exist: {path}");
+                resolved = _sandbox.Resolve(path);
+            }
+            catch (UnauthorizedAccessException ex)
+            {
+                return McpToolResult.Error(ex.Message);
             }
 
-            Directory.CreateDirectory(parent);
+            if (Directory.Exists(resolved))
+            {
+                return McpToolResult.Error($"Path is a directory: {path}");
+            }
+
+            if (File.Exists(resolved) && !overwrite)
+            {
+                return McpToolResult.Error($"File already exists and overwrite is false: {path}");
+            }
+
+            var parent = Path.GetDirectoryName(resolved);
+
+            if (parent is not null && !Directory.Exists(parent))
+            {
+                if (!createDirectories)
+                {
+                    return McpToolResult.Error($"Parent directory does not exist: {path}");
+                }
+
+                Directory.CreateDirectory(parent);
+            }
+
+            cancellationToken.ThrowIfCancellationRequested();
+
+            await File.WriteAllTextAsync(resolved, content, _utf8NoBom, cancellationToken).ConfigureAwait(false);
+
+            return McpToolResult.Json(new
+            {
+                path = _sandbox.ToRelative(resolved),
+                bytesWritten = _utf8NoBom.GetByteCount(content),
+            });
         }
-
-        cancellationToken.ThrowIfCancellationRequested();
-
-        await File.WriteAllTextAsync(resolved, content, _utf8NoBom, cancellationToken).ConfigureAwait(false);
-
-        return McpToolResult.Json(new
+        catch (Exception ex) when (ex is UnauthorizedAccessException or IOException)
         {
-            path = _sandbox.ToRelative(resolved),
-            bytesWritten = _utf8NoBom.GetByteCount(content),
-        });
+            // Covers a parent that is a file, a read-only target, and similar failures of the write itself.
+            return McpToolResult.Error($"Cannot write '{path}': {ex.Message}");
+        }
     }
 }

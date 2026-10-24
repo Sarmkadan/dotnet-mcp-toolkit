@@ -47,31 +47,43 @@ public sealed class FsListTool : IMcpTool
     /// <inheritdoc />
     public Task<McpToolResult> InvokeAsync(JsonElement? arguments, CancellationToken cancellationToken = default)
     {
-        var path = ToolArguments.GetString(arguments, "path", ".") ?? ".";
-        var recursive = ToolArguments.GetBoolean(arguments, "recursive");
-
-        string resolved;
-        try
+        if (ToolArgumentValidation.RequireObjectArguments(arguments) is { } argumentError)
         {
-            resolved = _sandbox.Resolve(path);
-        }
-        catch (UnauthorizedAccessException ex)
-        {
-            return Task.FromResult(McpToolResult.Error(ex.Message));
+            return Task.FromResult(argumentError);
         }
 
-        if (!Directory.Exists(resolved))
+        if (ToolArgumentValidation.OptionalPath(arguments, "path", ".", out var path) is { } pathError)
         {
-            return Task.FromResult(McpToolResult.Error($"Directory not found: {path}"));
+            return Task.FromResult(pathError);
         }
 
-        var option = recursive ? SearchOption.AllDirectories : SearchOption.TopDirectoryOnly;
-        var entries = new List<object>();
-        var truncated = false;
-        const int maxEntries = 2000;
+        if (ToolArgumentValidation.OptionalBoolean(arguments, "recursive", false, out var recursive) is { } recursiveError)
+        {
+            return Task.FromResult(recursiveError);
+        }
 
         try
         {
+            string resolved;
+            try
+            {
+                resolved = _sandbox.Resolve(path);
+            }
+            catch (UnauthorizedAccessException ex)
+            {
+                return Task.FromResult(McpToolResult.Error(ex.Message));
+            }
+
+            if (!Directory.Exists(resolved))
+            {
+                return Task.FromResult(McpToolResult.Error($"Directory not found: {path}"));
+            }
+
+            var option = recursive ? SearchOption.AllDirectories : SearchOption.TopDirectoryOnly;
+            var entries = new List<object>();
+            var truncated = false;
+            const int maxEntries = 2000;
+
             foreach (var entry in Directory.EnumerateFileSystemEntries(resolved, "*", option))
             {
                 if (entries.Count >= maxEntries)
@@ -122,20 +134,21 @@ public sealed class FsListTool : IMcpTool
                     continue;
                 }
             }
+
+            entries.Sort((a, b) => string.Compare(
+                GetPath(a), GetPath(b), StringComparison.Ordinal));
+
+            object result = truncated
+                ? new { entries, truncated = true }
+                : (object)new { entries };
+
+            return Task.FromResult(McpToolResult.Json(result));
         }
-        catch (DirectoryNotFoundException ex)
+        catch (Exception ex) when (ex is UnauthorizedAccessException or IOException)
         {
-            return Task.FromResult(McpToolResult.Error(ex.Message));
+            // DirectoryNotFoundException is an IOException, so a directory removed mid-walk lands here too.
+            return Task.FromResult(McpToolResult.Error($"Cannot list '{path}': {ex.Message}"));
         }
-
-        entries.Sort((a, b) => string.Compare(
-            GetPath(a), GetPath(b), StringComparison.Ordinal));
-
-        object result = truncated
-            ? new { entries, truncated = true }
-            : (object)new { entries };
-
-        return Task.FromResult(McpToolResult.Json(result));
     }
 
     private static string GetPath(object entry)

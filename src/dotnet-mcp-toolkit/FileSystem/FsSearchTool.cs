@@ -42,6 +42,7 @@ public sealed class FsSearchTool : IMcpTool
     private const int _binaryDetectionBytes = 8 * 1024;
     private const int _defaultMaxResults = 200;
     private const int _maxMaxResults = 1000;
+    private const int _maxPatternLength = 1000;
     private static readonly TimeSpan _regexTimeout = TimeSpan.FromSeconds(1);
 
     private readonly PathSandbox _sandbox;
@@ -68,20 +69,46 @@ public sealed class FsSearchTool : IMcpTool
     /// <inheritdoc />
     public async Task<McpToolResult> InvokeAsync(JsonElement? arguments, CancellationToken cancellationToken = default)
     {
-        var pattern = ToolArguments.GetString(arguments, "pattern");
-
-        if (string.IsNullOrEmpty(pattern))
+        if (ToolArgumentValidation.RequireObjectArguments(arguments) is { } argumentError)
         {
-            return McpToolResult.Error("Missing required argument: pattern");
+            return argumentError;
         }
 
-        var path = ToolArguments.GetString(arguments, "path", ".") ?? ".";
-        var glob = ToolArguments.GetString(arguments, "glob", "*") ?? "*";
-        var maxResults = Math.Clamp(
-            ToolArguments.GetInt32(arguments, "maxResults", _defaultMaxResults) ?? _defaultMaxResults,
-            1,
-            _maxMaxResults);
-        var ignoreCase = ToolArguments.GetBoolean(arguments, "ignoreCase");
+        if (ToolArgumentValidation.RequireString(arguments, "pattern", out var pattern) is { } patternError)
+        {
+            return patternError;
+        }
+
+        if (ToolArgumentValidation.RequireMaxLength(pattern, "pattern", _maxPatternLength) is { } patternLengthError)
+        {
+            return patternLengthError;
+        }
+
+        if (ToolArgumentValidation.OptionalPath(arguments, "path", ".", out var path) is { } pathError)
+        {
+            return pathError;
+        }
+
+        if (ToolArgumentValidation.OptionalString(arguments, "glob", "*", out var glob) is { } globError)
+        {
+            return globError;
+        }
+
+        if (!IsValidGlob(glob))
+        {
+            return McpToolResult.Error(
+                "Argument 'glob' must be a file name pattern without path separators, '..' or NUL characters");
+        }
+
+        if (ToolArgumentValidation.OptionalInt32(arguments, "maxResults", 1, _maxMaxResults, _defaultMaxResults, out var maxResults) is { } maxResultsError)
+        {
+            return maxResultsError;
+        }
+
+        if (ToolArgumentValidation.OptionalBoolean(arguments, "ignoreCase", false, out var ignoreCase) is { } ignoreCaseError)
+        {
+            return ignoreCaseError;
+        }
 
         Regex regex;
         try
@@ -100,34 +127,34 @@ public sealed class FsSearchTool : IMcpTool
             return McpToolResult.Error($"Invalid regular expression: {ex.Message}");
         }
 
-        string resolved;
         try
         {
-            resolved = _sandbox.Resolve(path);
-        }
-        catch (UnauthorizedAccessException ex)
-        {
-            return McpToolResult.Error(ex.Message);
-        }
+            string resolved;
+            try
+            {
+                resolved = _sandbox.Resolve(path);
+            }
+            catch (UnauthorizedAccessException ex)
+            {
+                return McpToolResult.Error(ex.Message);
+            }
 
-        if (!Directory.Exists(resolved))
-        {
-            return McpToolResult.Error($"Directory not found: {path}");
-        }
+            if (!Directory.Exists(resolved))
+            {
+                return McpToolResult.Error($"Directory not found: {path}");
+            }
 
-        var enumerationOptions = new EnumerationOptions
-        {
-            RecurseSubdirectories = true,
-            IgnoreInaccessible = true,
-            // Do not follow symbolic links or other reparse points, so the walk cannot leave the sandbox.
-            AttributesToSkip = FileAttributes.ReparsePoint,
-        };
+            var enumerationOptions = new EnumerationOptions
+            {
+                RecurseSubdirectories = true,
+                IgnoreInaccessible = true,
+                // Do not follow symbolic links or other reparse points, so the walk cannot leave the sandbox.
+                AttributesToSkip = FileAttributes.ReparsePoint,
+            };
 
-        var matches = new List<object>();
-        var truncated = false;
+            var matches = new List<object>();
+            var truncated = false;
 
-        try
-        {
             foreach (var file in Directory.EnumerateFiles(resolved, glob, enumerationOptions))
             {
                 cancellationToken.ThrowIfCancellationRequested();
@@ -168,18 +195,22 @@ public sealed class FsSearchTool : IMcpTool
                     break;
                 }
             }
+
+            return McpToolResult.Json(new { matches, truncated });
         }
         catch (RegexMatchTimeoutException)
         {
             return McpToolResult.Error("Regular expression timed out; simplify the pattern.");
         }
-        catch (DirectoryNotFoundException ex)
+        catch (Exception ex) when (ex is UnauthorizedAccessException or IOException)
         {
-            return McpToolResult.Error(ex.Message);
+            // DirectoryNotFoundException is an IOException, so a directory removed mid-walk lands here too.
+            return McpToolResult.Error($"Cannot search '{path}': {ex.Message}");
         }
-
-        return McpToolResult.Json(new { matches, truncated });
     }
+
+    private static bool IsValidGlob(string glob) =>
+        glob.IndexOfAny(['/', '\\', '\0']) < 0 && !glob.Contains("..", StringComparison.Ordinal);
 
     private static bool TryGetSearchableFileSize(string file, out long size)
     {
