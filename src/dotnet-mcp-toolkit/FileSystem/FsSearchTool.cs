@@ -1,0 +1,216 @@
+using System.Text;
+using System.Text.Json;
+using System.Text.RegularExpressions;
+
+namespace DotnetMcpToolkit.FileSystem;
+
+/// <summary>
+/// MCP tool <c>fs_search</c>: searches text files inside the sandbox for lines matching a regular expression.
+/// </summary>
+public sealed class FsSearchTool : IMcpTool
+{
+    private static readonly JsonElement _inputSchema = JsonDocument.Parse("""
+        {
+            "type": "object",
+            "required": ["pattern"],
+            "properties": {
+                "pattern": {
+                    "type": "string",
+                    "description": "Regular expression matched against each line"
+                },
+                "path": {
+                    "type": "string",
+                    "description": "Relative directory to search (default \".\")"
+                },
+                "glob": {
+                    "type": "string",
+                    "description": "File name filter, e.g. \"*.cs\" (default \"*\")"
+                },
+                "maxResults": {
+                    "type": "integer",
+                    "description": "Maximum number of matching lines to return (default 200, max 1000)"
+                },
+                "ignoreCase": {
+                    "type": "boolean",
+                    "description": "Whether the pattern matches case-insensitively (default false)"
+                }
+            }
+        }
+        """).RootElement.Clone();
+
+    private const long _maxFileSizeBytes = 5L * 1024 * 1024;
+    private const int _binaryDetectionBytes = 8 * 1024;
+    private const int _defaultMaxResults = 200;
+    private const int _maxMaxResults = 1000;
+    private static readonly TimeSpan _regexTimeout = TimeSpan.FromSeconds(1);
+
+    private readonly PathSandbox _sandbox;
+
+    /// <summary>
+    /// Creates the tool bound to the given <paramref name="sandbox"/>.
+    /// </summary>
+    /// <param name="sandbox">The sandbox that constrains accessible paths.</param>
+    public FsSearchTool(PathSandbox sandbox)
+    {
+        ArgumentNullException.ThrowIfNull(sandbox);
+        _sandbox = sandbox;
+    }
+
+    /// <inheritdoc />
+    public string Name => "fs_search";
+
+    /// <inheritdoc />
+    public string Description => "Searches text files inside the sandbox for lines matching a regular expression. Skips binary files and files larger than 5 MB.";
+
+    /// <inheritdoc />
+    public JsonElement InputSchema => _inputSchema;
+
+    /// <inheritdoc />
+    public async Task<McpToolResult> InvokeAsync(JsonElement? arguments, CancellationToken cancellationToken = default)
+    {
+        var pattern = ToolArguments.GetString(arguments, "pattern");
+
+        if (string.IsNullOrEmpty(pattern))
+        {
+            return McpToolResult.Error("Missing required argument: pattern");
+        }
+
+        var path = ToolArguments.GetString(arguments, "path", ".") ?? ".";
+        var glob = ToolArguments.GetString(arguments, "glob", "*") ?? "*";
+        var maxResults = Math.Clamp(
+            ToolArguments.GetInt32(arguments, "maxResults", _defaultMaxResults) ?? _defaultMaxResults,
+            1,
+            _maxMaxResults);
+        var ignoreCase = ToolArguments.GetBoolean(arguments, "ignoreCase");
+
+        Regex regex;
+        try
+        {
+            var options = RegexOptions.CultureInvariant;
+
+            if (ignoreCase)
+            {
+                options |= RegexOptions.IgnoreCase;
+            }
+
+            regex = new Regex(pattern, options, _regexTimeout);
+        }
+        catch (ArgumentException ex)
+        {
+            return McpToolResult.Error($"Invalid regular expression: {ex.Message}");
+        }
+
+        string resolved;
+        try
+        {
+            resolved = _sandbox.Resolve(path);
+        }
+        catch (UnauthorizedAccessException ex)
+        {
+            return McpToolResult.Error(ex.Message);
+        }
+
+        if (!Directory.Exists(resolved))
+        {
+            return McpToolResult.Error($"Directory not found: {path}");
+        }
+
+        var enumerationOptions = new EnumerationOptions
+        {
+            RecurseSubdirectories = true,
+            IgnoreInaccessible = true,
+            // Do not follow symbolic links or other reparse points, so the walk cannot leave the sandbox.
+            AttributesToSkip = FileAttributes.ReparsePoint,
+        };
+
+        var matches = new List<object>();
+        var truncated = false;
+
+        try
+        {
+            foreach (var file in Directory.EnumerateFiles(resolved, glob, enumerationOptions))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                if (!TryGetSearchableFileSize(file, out var size) || size > _maxFileSizeBytes)
+                {
+                    continue;
+                }
+
+                if (await IsBinaryAsync(file, cancellationToken).ConfigureAwait(false))
+                {
+                    continue;
+                }
+
+                var relativePath = _sandbox.ToRelative(file);
+                var lineNumber = 0;
+
+                await foreach (var line in File.ReadLinesAsync(file, Encoding.UTF8, cancellationToken).ConfigureAwait(false))
+                {
+                    lineNumber++;
+
+                    if (!regex.IsMatch(line))
+                    {
+                        continue;
+                    }
+
+                    if (matches.Count >= maxResults)
+                    {
+                        truncated = true;
+                        break;
+                    }
+
+                    matches.Add(new { path = relativePath, line = lineNumber, text = line });
+                }
+
+                if (truncated)
+                {
+                    break;
+                }
+            }
+        }
+        catch (RegexMatchTimeoutException)
+        {
+            return McpToolResult.Error("Regular expression timed out; simplify the pattern.");
+        }
+        catch (DirectoryNotFoundException ex)
+        {
+            return McpToolResult.Error(ex.Message);
+        }
+
+        return McpToolResult.Json(new { matches, truncated });
+    }
+
+    private static bool TryGetSearchableFileSize(string file, out long size)
+    {
+        try
+        {
+            size = new FileInfo(file).Length;
+            return true;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            size = 0;
+            return false;
+        }
+    }
+
+    private static async Task<bool> IsBinaryAsync(string filePath, CancellationToken cancellationToken)
+    {
+        var buffer = new byte[_binaryDetectionBytes];
+        int bytesRead;
+
+        try
+        {
+            await using var stream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read, _binaryDetectionBytes, useAsync: true);
+            bytesRead = await stream.ReadAsync(buffer.AsMemory(0, _binaryDetectionBytes), cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // Unreadable files are treated as binary so that they are skipped.
+            return true;
+        }
+
+        return buffer.AsSpan(0, bytesRead).Contains((byte)0);
+    }
+}

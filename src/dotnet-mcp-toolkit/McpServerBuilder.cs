@@ -1,3 +1,5 @@
+using DotnetMcpToolkit.FileSystem;
+
 namespace DotnetMcpToolkit;
 
 /// <summary>
@@ -64,9 +66,24 @@ public sealed class McpServerBuilder
     /// </summary>
     /// <param name="root">Directory the tools may access; paths outside it are rejected.</param>
     /// <param name="readOnly">When <see langword="true"/>, write tools are not registered.</param>
+    /// <returns>This builder, for chaining.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="root"/> is <see langword="null"/>.</exception>
+    /// <exception cref="ArgumentException"><paramref name="root"/> is empty or whitespace.</exception>
+    /// <exception cref="DirectoryNotFoundException"><paramref name="root"/> does not exist.</exception>
     public McpServerBuilder AddFileSystem(string root, bool readOnly = false)
     {
-        throw new NotImplementedException();
+        var sandbox = new PathSandbox(root);
+
+        AddTool(new FsListTool(sandbox));
+        AddTool(new FsReadFileTool(sandbox));
+        AddTool(new FsSearchTool(sandbox));
+
+        if (!readOnly)
+        {
+            AddTool(new FsWriteFileTool(sandbox));
+        }
+
+        return this;
     }
 
     /// <summary>
