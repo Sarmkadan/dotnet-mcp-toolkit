@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace DotnetMcpToolkit;
 
@@ -13,13 +14,25 @@ namespace DotnetMcpToolkit;
 /// </param>
 public sealed record McpToolResult(IReadOnlyList<McpContent> Content, bool IsError = false)
 {
+    private static readonly JsonSerializerOptions _jsonOptions = new()
+    {
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        WriteIndented = false,
+        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
+    };
+
+    /// <summary>
+    /// A successful result with no content blocks.
+    /// </summary>
+    public static readonly McpToolResult Empty = new([]);
+
     /// <summary>
     /// Creates a successful result with a single text block.
     /// </summary>
     /// <param name="text">The text payload.</param>
     public static McpToolResult Text(string text)
     {
-        return new McpToolResult([new McpContent("text", text)]);
+        return new McpToolResult([new McpContent(McpContent.TextType, text)]);
     }
 
     /// <summary>
@@ -28,7 +41,7 @@ public sealed record McpToolResult(IReadOnlyList<McpContent> Content, bool IsErr
     /// <param name="message">Human-readable error message for the model.</param>
     public static McpToolResult Error(string message)
     {
-        return new McpToolResult([new McpContent("text", message)], IsError: true);
+        return new McpToolResult([new McpContent(McpContent.TextType, message)], IsError: true);
     }
 
     /// <summary>
@@ -38,8 +51,8 @@ public sealed record McpToolResult(IReadOnlyList<McpContent> Content, bool IsErr
     /// <param name="value">Value to serialize.</param>
     public static McpToolResult Json<T>(T value)
     {
-        var json = JsonSerializer.Serialize(value);
-        return new McpToolResult([new McpContent("text", json)]);
+        var json = JsonSerializer.Serialize(value, _jsonOptions);
+        return new McpToolResult([new McpContent(McpContent.TextType, json)]);
     }
 }
 
@@ -48,4 +61,10 @@ public sealed record McpToolResult(IReadOnlyList<McpContent> Content, bool IsErr
 /// </summary>
 /// <param name="Type">Content type discriminator, e.g. <c>"text"</c>.</param>
 /// <param name="Text">Text payload for <c>text</c> blocks.</param>
-public sealed record McpContent(string Type, string? Text);
+public sealed record McpContent(string Type, string? Text)
+{
+    /// <summary>
+    /// Content type discriminator for text blocks.
+    /// </summary>
+    public const string TextType = "text";
+}
