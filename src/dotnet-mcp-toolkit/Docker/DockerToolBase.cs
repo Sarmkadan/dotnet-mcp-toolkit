@@ -46,9 +46,9 @@ public abstract class DockerToolBase : IMcpTool
             return McpToolResult.Error(message);
         }
 
-        var result = await _runner.RunAsync(dockerArguments, cancellationToken);
+        var result = await _runner.RunAsync(dockerArguments, cancellationToken, GetTimeout(arguments));
 
-        if (!result.Succeeded)
+        if (IsFailure(result))
         {
             return McpToolResult.Error(
                 string.IsNullOrWhiteSpace(result.StandardError)
@@ -71,6 +71,26 @@ public abstract class DockerToolBase : IMcpTool
         JsonElement? arguments,
         [NotNullWhen(true)] out IReadOnlyList<string>? dockerArguments,
         [NotNullWhen(false)] out string? message);
+
+    /// <summary>
+    /// Gets the run time limit for the docker command. Called after <see cref="TryBuildArguments"/> accepted the arguments.
+    /// </summary>
+    /// <param name="arguments">The <c>arguments</c> object from the request, or <see langword="null"/>.</param>
+    /// <returns>The time limit, or <see langword="null"/> for the runner's default.</returns>
+    protected virtual TimeSpan? GetTimeout(JsonElement? arguments)
+    {
+        return null;
+    }
+
+    /// <summary>
+    /// Decides whether a docker command outcome is a tool error. The default treats any non-zero exit code as an error.
+    /// </summary>
+    /// <param name="result">The command outcome.</param>
+    /// <returns><see langword="true"/> when the outcome must be reported as an error result.</returns>
+    protected virtual bool IsFailure(DockerCommandResult result)
+    {
+        return !result.Succeeded;
+    }
 
     /// <summary>
     /// Converts a successful docker command into the tool result.

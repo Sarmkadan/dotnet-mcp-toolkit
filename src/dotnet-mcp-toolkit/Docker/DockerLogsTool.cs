@@ -1,7 +1,6 @@
 using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.Text.Json;
-using System.Text.RegularExpressions;
 using DotnetMcpToolkit.FileSystem;
 
 namespace DotnetMcpToolkit.Docker;
@@ -9,7 +8,7 @@ namespace DotnetMcpToolkit.Docker;
 /// <summary>
 /// MCP tool <c>docker_logs</c>: returns the last lines of a container's logs.
 /// </summary>
-public sealed partial class DockerLogsTool : DockerToolBase
+public sealed class DockerLogsTool : DockerToolBase
 {
     private const int _defaultTail = 200;
     private const int _maxTail = 5000;
@@ -48,9 +47,6 @@ public sealed partial class DockerLogsTool : DockerToolBase
     {
     }
 
-    [GeneratedRegex(@"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")]
-    private static partial Regex ContainerNamePattern();
-
     /// <inheritdoc />
     protected override bool TryBuildArguments(
         JsonElement? arguments,
@@ -59,7 +55,7 @@ public sealed partial class DockerLogsTool : DockerToolBase
     {
         var container = ToolArguments.GetString(arguments, "container");
 
-        if (container is null || !ContainerNamePattern().IsMatch(container))
+        if (container is null || !DockerPatterns.ContainerName().IsMatch(container))
         {
             dockerArguments = null;
             message = "container must be a container name or id of 1-128 characters: letters, digits, '_', '.', '-', starting with a letter or digit";

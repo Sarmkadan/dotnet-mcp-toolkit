@@ -1,4 +1,5 @@
 using DotnetMcpToolkit.Database;
+using DotnetMcpToolkit.Docker;
 using DotnetMcpToolkit.FileSystem;
 using DotnetMcpToolkit.Git;
 
@@ -144,12 +145,39 @@ public sealed class McpServerBuilder
     }
 
     /// <summary>
-    /// Adds the docker tool pack (<c>docker_ps</c>, <c>docker_logs</c>, <c>docker_inspect</c>, <c>docker_exec</c>).
+    /// Adds the read-only docker tool pack (<c>docker_ps</c>, <c>docker_logs</c>, <c>docker_inspect</c>).
+    /// <c>docker_exec</c> is not registered; use <see cref="AddDocker(DockerOptions)"/> with <see cref="DockerOptions.AllowExec"/> to opt in.
     /// </summary>
     /// <param name="dockerHost">Docker daemon endpoint; <see langword="null"/> uses <c>DOCKER_HOST</c> or the default socket.</param>
+    /// <returns>This builder, for chaining.</returns>
     public McpServerBuilder AddDocker(string? dockerHost = null)
     {
-        throw new NotImplementedException();
+        return AddDocker(new DockerOptions(dockerHost));
+    }
+
+    /// <summary>
+    /// Adds the docker tool pack (<c>docker_ps</c>, <c>docker_logs</c>, <c>docker_inspect</c>), and <c>docker_exec</c> when
+    /// <see cref="DockerOptions.AllowExec"/> is set.
+    /// </summary>
+    /// <param name="options">Daemon endpoint and exec opt-in.</param>
+    /// <returns>This builder, for chaining.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="options"/> is <see langword="null"/>.</exception>
+    public McpServerBuilder AddDocker(DockerOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+
+        var runner = new DockerCliRunner(options.DockerHost);
+
+        AddTool(new DockerPsTool(runner));
+        AddTool(new DockerLogsTool(runner));
+        AddTool(new DockerInspectTool(runner));
+
+        if (options.AllowExec)
+        {
+            AddTool(new DockerExecTool(runner));
+        }
+
+        return this;
     }
 
     /// <summary>
