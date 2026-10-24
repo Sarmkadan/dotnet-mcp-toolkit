@@ -9,6 +9,9 @@ public static class JsonRpcMessages
 {
     private const string _version = "2.0";
 
+    // JSON-RPC 2.0 requires an explicit "id": null when the request id is unknown; a missing id member is not valid.
+    private static readonly JsonElement _nullId = JsonSerializer.SerializeToElement<string?>(null);
+
     /// <summary>
     /// Creates a successful response.
     /// </summary>
@@ -30,7 +33,7 @@ public static class JsonRpcMessages
     /// <returns>A response with <c>error</c> set and no <c>result</c>.</returns>
     public static JsonRpcResponse Failure(JsonElement? id, int code, string message, JsonElement? data = null)
     {
-        return new JsonRpcResponse(_version, id, Error: new JsonRpcError(code, message, data));
+        return new JsonRpcResponse(_version, id ?? _nullId, Error: new JsonRpcError(code, message, data));
     }
 
     /// <summary>

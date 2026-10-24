@@ -69,13 +69,13 @@ public class JsonRpcMessagesTests
     }
 
     [Fact]
-    public void Serialize_FailureResponse_OmitsResultAndNullId()
+    public void Serialize_FailureResponse_OmitsResultAndWritesNullId()
     {
         var json = JsonRpcMessages.Serialize(
             JsonRpcMessages.Failure(null, JsonRpcErrorCodes.MethodNotFound, "Method not found"));
 
         Assert.Equal(
-            """{"jsonrpc":"2.0","error":{"code":-32601,"message":"Method not found"}}""",
+            """{"jsonrpc":"2.0","id":null,"error":{"code":-32601,"message":"Method not found"}}""",
             json);
     }
 }
