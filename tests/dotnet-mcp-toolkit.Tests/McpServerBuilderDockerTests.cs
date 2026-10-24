@@ -1,4 +1,4 @@
-using DotnetMcpToolkit.Docker;
+using DotnetMcpToolkit.Options;
 
 namespace DotnetMcpToolkit.Tests;
 
@@ -33,7 +33,7 @@ public sealed class McpServerBuilderDockerTests
     [Fact]
     public void AddDocker_AllowExec_RegistersExecToo()
     {
-        var builder = new McpServerBuilder("test", "1.0.0").AddDocker(new DockerOptions(AllowExec: true));
+        var builder = new McpServerBuilder("test", "1.0.0").AddDocker(new DockerOptions { AllowExec = true });
 
         Assert.Equal(["docker_exec", "docker_inspect", "docker_logs", "docker_ps"], builder.Tools.Select(t => t.Name).Order());
     }
@@ -51,6 +51,6 @@ public sealed class McpServerBuilderDockerTests
     {
         var builder = new McpServerBuilder("test", "1.0.0");
 
-        Assert.Same(builder, builder.AddDocker(new DockerOptions(AllowExec: true)));
+        Assert.Same(builder, builder.AddDocker(new DockerOptions { AllowExec = true }));
     }
 }

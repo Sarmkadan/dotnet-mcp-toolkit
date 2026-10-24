@@ -25,19 +25,29 @@ public sealed class SqlExplainTool : IMcpTool
         }
         """).RootElement.Clone();
 
-    private const int _defaultTimeoutSeconds = 30;
+    private static readonly TimeSpan _defaultCommandTimeout = TimeSpan.FromSeconds(30);
+    private static readonly TimeSpan _maxCommandTimeout = TimeSpan.FromMinutes(10);
 
     private readonly IDbConnectionFactory _factory;
+    private readonly int _commandTimeoutSeconds;
 
     /// <summary>
     /// Creates the tool.
     /// </summary>
     /// <param name="factory">Source of database connections.</param>
+    /// <param name="commandTimeout">Time limit for the plan command, above zero and at most 10 minutes; <see langword="null"/> means 30 seconds.</param>
     /// <exception cref="ArgumentNullException"><paramref name="factory"/> is <see langword="null"/>.</exception>
-    public SqlExplainTool(IDbConnectionFactory factory)
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="commandTimeout"/> is not in (0, 10 minutes].</exception>
+    public SqlExplainTool(IDbConnectionFactory factory, TimeSpan? commandTimeout = null)
     {
         ArgumentNullException.ThrowIfNull(factory);
+
+        var timeout = commandTimeout ?? _defaultCommandTimeout;
+        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(timeout, TimeSpan.Zero);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(timeout, _maxCommandTimeout);
+
         _factory = factory;
+        _commandTimeoutSeconds = (int)Math.Ceiling(timeout.TotalSeconds);
     }
 
     /// <inheritdoc />
@@ -94,7 +104,7 @@ public sealed class SqlExplainTool : IMcpTool
             await using var command = connection.CreateCommand();
 
             command.CommandText = planStatement;
-            command.CommandTimeout = _defaultTimeoutSeconds;
+            command.CommandTimeout = _commandTimeoutSeconds;
 
             await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
 

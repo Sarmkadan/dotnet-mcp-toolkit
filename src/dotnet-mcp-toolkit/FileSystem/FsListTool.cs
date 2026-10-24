@@ -24,15 +24,22 @@ public sealed class FsListTool : IMcpTool
         """).RootElement.Clone();
 
     private readonly PathSandbox _sandbox;
+    private readonly int _maxEntries;
 
     /// <summary>
     /// Creates the tool bound to the given <paramref name="sandbox"/>.
     /// </summary>
     /// <param name="sandbox">The sandbox that constrains accessible paths.</param>
-    public FsListTool(PathSandbox sandbox)
+    /// <param name="maxEntries">Largest number of entries returned in one call; at least 1. Defaults to 2000.</param>
+    /// <exception cref="ArgumentNullException"><paramref name="sandbox"/> is <see langword="null"/>.</exception>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="maxEntries"/> is less than 1.</exception>
+    public FsListTool(PathSandbox sandbox, int maxEntries = 2000)
     {
         ArgumentNullException.ThrowIfNull(sandbox);
+        ArgumentOutOfRangeException.ThrowIfLessThan(maxEntries, 1);
+
         _sandbox = sandbox;
+        _maxEntries = maxEntries;
     }
 
     /// <inheritdoc />
@@ -82,11 +89,9 @@ public sealed class FsListTool : IMcpTool
             var option = recursive ? SearchOption.AllDirectories : SearchOption.TopDirectoryOnly;
             var entries = new List<object>();
             var truncated = false;
-            const int maxEntries = 2000;
-
             foreach (var entry in Directory.EnumerateFileSystemEntries(resolved, "*", option))
             {
-                if (entries.Count >= maxEntries)
+                if (entries.Count >= _maxEntries)
                 {
                     truncated = true;
                     break;

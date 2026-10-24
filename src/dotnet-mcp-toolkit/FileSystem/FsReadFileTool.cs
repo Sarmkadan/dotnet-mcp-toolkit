@@ -30,20 +30,28 @@ public sealed class FsReadFileTool : IMcpTool
         }
         """).RootElement.Clone();
 
-    private const long _maxFileSizeBytes = 10L * 1024 * 1024;
     private const int _maxLimit = 5000;
     private const int _binaryDetectionBytes = 8 * 1024;
 
     private readonly PathSandbox _sandbox;
+    private readonly long _maxFileSizeBytes;
 
     /// <summary>
     /// Creates the tool bound to the given <paramref name="sandbox"/>.
     /// </summary>
     /// <param name="sandbox">The sandbox that constrains accessible paths.</param>
-    public FsReadFileTool(PathSandbox sandbox)
+    /// <param name="maxFileSizeBytes">
+    /// Largest file that may be read without an offset and limit, in bytes; at least 1. Defaults to 10 MB.
+    /// </param>
+    /// <exception cref="ArgumentNullException"><paramref name="sandbox"/> is <see langword="null"/>.</exception>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="maxFileSizeBytes"/> is less than 1.</exception>
+    public FsReadFileTool(PathSandbox sandbox, long maxFileSizeBytes = 10L * 1024 * 1024)
     {
         ArgumentNullException.ThrowIfNull(sandbox);
+        ArgumentOutOfRangeException.ThrowIfLessThan(maxFileSizeBytes, 1);
+
         _sandbox = sandbox;
+        _maxFileSizeBytes = maxFileSizeBytes;
     }
 
     /// <inheritdoc />
@@ -103,7 +111,7 @@ public sealed class FsReadFileTool : IMcpTool
             if (fileInfo.Length > _maxFileSizeBytes && !hasRangeArgs)
             {
                 return McpToolResult.Error(
-                    $"File is {fileInfo.Length / (1024 * 1024):F1} MB, exceeding the 10 MB limit. " +
+                    $"File is {fileInfo.Length / (1024 * 1024):F1} MB, exceeding the {_maxFileSizeBytes / (1024.0 * 1024):0.##} MB limit. " +
                     "Use offset and limit to read a portion.");
             }
 

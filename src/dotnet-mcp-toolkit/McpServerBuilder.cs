@@ -2,6 +2,7 @@ using DotnetMcpToolkit.Database;
 using DotnetMcpToolkit.Docker;
 using DotnetMcpToolkit.FileSystem;
 using DotnetMcpToolkit.Git;
+using DotnetMcpToolkit.Options;
 
 namespace DotnetMcpToolkit;
 
@@ -26,8 +27,6 @@ public sealed class McpServerBuilder
 {
     private const int _maxToolNameLength = 64;
 
-    private static readonly string[] _dockerHostSchemes = ["unix://", "tcp://", "npipe://", "ssh://"];
-
     private readonly string _name;
     private readonly string _version;
     private readonly List<IMcpTool> _tools = [];
@@ -50,6 +49,47 @@ public sealed class McpServerBuilder
     /// Gets the tools registered so far, in registration order. Use it to inspect the builder before <see cref="Build"/>.
     /// </summary>
     public IReadOnlyList<IMcpTool> Tools => _tools;
+
+    /// <summary>
+    /// Creates a builder with the server identity and every tool pack set in <paramref name="options"/>.
+    /// A pack is registered only when its options are not <see langword="null"/>. Add more tools to the returned
+    /// builder before <see cref="Build"/> if needed.
+    /// </summary>
+    /// <param name="options">Root configuration, typically bound from the <c>Mcp</c> configuration section.</param>
+    /// <returns>A builder holding the tools of every configured pack.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="options"/> is <see langword="null"/>.</exception>
+    /// <exception cref="ArgumentException">A value failed validation; see <see cref="McpServerOptions.Validate"/>.</exception>
+    /// <exception cref="ArgumentOutOfRangeException">A limit is outside its range; see <see cref="McpServerOptions.Validate"/>.</exception>
+    /// <exception cref="NotSupportedException">The database provider is not shipped in this package.</exception>
+    public static McpServerBuilder FromOptions(McpServerOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        options.Validate();
+
+        var builder = new McpServerBuilder(options.Name, options.Version);
+
+        if (options.FileSystem is { } fileSystem)
+        {
+            builder.AddFileSystem(fileSystem);
+        }
+
+        if (options.Git is { } git)
+        {
+            builder.AddGit(git);
+        }
+
+        if (options.Database is { } database)
+        {
+            builder.AddDatabase(database);
+        }
+
+        if (options.Docker is { } docker)
+        {
+            builder.AddDocker(docker);
+        }
+
+        return builder;
+    }
 
     /// <summary>
     /// Registers a custom tool.
@@ -83,18 +123,23 @@ public sealed class McpServerBuilder
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(root);
 
-        var sandbox = new PathSandbox(root);
+        return RegisterFileSystem(new PathSandbox(root), new FileSystemOptions { ReadOnly = readOnly });
+    }
 
-        AddTool(new FsListTool(sandbox));
-        AddTool(new FsReadFileTool(sandbox));
-        AddTool(new FsSearchTool(sandbox));
+    /// <summary>
+    /// Adds the filesystem tool pack configured by <paramref name="options"/>, including its size and result limits.
+    /// </summary>
+    /// <param name="options">Root directory, read-only flag and limits.</param>
+    /// <returns>This builder, for chaining.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="options"/> is <see langword="null"/>.</exception>
+    /// <exception cref="ArgumentException"><see cref="FileSystemOptions.Root"/> is empty, whitespace or does not exist as a directory.</exception>
+    /// <exception cref="ArgumentOutOfRangeException">A limit is below its minimum.</exception>
+    public McpServerBuilder AddFileSystem(FileSystemOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        options.Validate();
 
-        if (!readOnly)
-        {
-            AddTool(new FsWriteFileTool(sandbox));
-        }
-
-        return this;
+        return RegisterFileSystem(new PathSandbox(options.Root), options);
     }
 
     /// <summary>
@@ -106,12 +151,27 @@ public sealed class McpServerBuilder
     /// <exception cref="DirectoryNotFoundException"><paramref name="repositoryPath"/> does not exist.</exception>
     public McpServerBuilder AddGit(string repositoryPath)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(repositoryPath);
+        return AddGit(new GitOptions { RepositoryPath = repositoryPath });
+    }
 
-        var runner = new GitCommandRunner(repositoryPath);
+    /// <summary>
+    /// Adds the git tool pack configured by <paramref name="options"/>: repository, git executable and the <c>git_log</c> limit.
+    /// </summary>
+    /// <param name="options">Repository path, git executable and limits.</param>
+    /// <returns>This builder, for chaining.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="options"/> is <see langword="null"/>.</exception>
+    /// <exception cref="ArgumentException"><see cref="GitOptions.RepositoryPath"/> or <see cref="GitOptions.GitExecutable"/> is empty or whitespace.</exception>
+    /// <exception cref="ArgumentOutOfRangeException"><see cref="GitOptions.MaxLogCount"/> is outside 1-500.</exception>
+    /// <exception cref="DirectoryNotFoundException"><see cref="GitOptions.RepositoryPath"/> does not exist.</exception>
+    public McpServerBuilder AddGit(GitOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        options.Validate();
+
+        var runner = new GitCommandRunner(options.RepositoryPath, options.GitExecutable);
 
         AddTool(new GitStatusTool(runner));
-        AddTool(new GitLogTool(runner));
+        AddTool(new GitLogTool(runner, options.MaxLogCount));
         AddTool(new GitDiffTool(runner));
         AddTool(new GitBlameTool(runner));
 
@@ -132,17 +192,36 @@ public sealed class McpServerBuilder
     /// <exception cref="NotSupportedException"><paramref name="provider"/> is not shipped in this package.</exception>
     public McpServerBuilder AddDatabase(string connectionString, DatabaseProvider provider, bool allowWrites = false)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(connectionString);
-
-        if (!Enum.IsDefined(provider))
+        return AddDatabase(new DatabaseOptions
         {
-            throw new ArgumentOutOfRangeException(nameof(provider), provider, "Unknown database provider.");
-        }
+            ConnectionString = connectionString,
+            Provider = provider,
+            AllowWrites = allowWrites,
+        });
+    }
 
-        return provider switch
+    /// <summary>
+    /// Adds the database tool pack for a built-in provider, configured by <paramref name="options"/>:
+    /// connection, write permission, row limit and command timeout.
+    /// </summary>
+    /// <param name="options">Connection, provider and limits.</param>
+    /// <returns>This builder, for chaining.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="options"/> is <see langword="null"/>.</exception>
+    /// <exception cref="ArgumentException"><see cref="DatabaseOptions.ConnectionString"/> is empty or whitespace.</exception>
+    /// <exception cref="ArgumentOutOfRangeException">
+    /// <see cref="DatabaseOptions.Provider"/> is not defined, <see cref="DatabaseOptions.MaxRows"/> is outside 1-5000, or
+    /// <see cref="DatabaseOptions.CommandTimeoutSeconds"/> is outside 1-600.
+    /// </exception>
+    /// <exception cref="NotSupportedException"><see cref="DatabaseOptions.Provider"/> is not shipped in this package.</exception>
+    public McpServerBuilder AddDatabase(DatabaseOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        options.Validate();
+
+        return options.Provider switch
         {
-            DatabaseProvider.Sqlite => AddDatabase(new SqliteConnectionFactory(connectionString), allowWrites),
-            _ => throw new NotSupportedException($"Provider {provider} requires the DotnetMcpToolkit.Database.{provider} package"),
+            DatabaseProvider.Sqlite => RegisterDatabase(new SqliteConnectionFactory(options.ConnectionString), options),
+            _ => throw new NotSupportedException($"Provider {options.Provider} requires the DotnetMcpToolkit.Database.{options.Provider} package"),
         };
     }
 
@@ -155,11 +234,7 @@ public sealed class McpServerBuilder
     /// <exception cref="ArgumentNullException"><paramref name="factory"/> is <see langword="null"/>.</exception>
     public McpServerBuilder AddDatabase(IDbConnectionFactory factory, bool allowWrites = false)
     {
-        AddTool(new SqlQueryTool(factory, allowWrites));
-        AddTool(new SqlSchemaTool(factory));
-        AddTool(new SqlExplainTool(factory));
-
-        return this;
+        return RegisterDatabase(factory, new DatabaseOptions { AllowWrites = allowWrites });
     }
 
     /// <summary>
@@ -174,28 +249,27 @@ public sealed class McpServerBuilder
     /// <exception cref="ArgumentException"><paramref name="dockerHost"/> is empty, whitespace or lacks a supported scheme.</exception>
     public McpServerBuilder AddDocker(string? dockerHost = null)
     {
-        if (dockerHost is not null && !IsValidDockerHost(dockerHost))
-        {
-            throw new ArgumentException(
-                $"Docker host '{dockerHost}' must start with one of: {string.Join(", ", _dockerHostSchemes)}.",
-                nameof(dockerHost));
-        }
-
-        return AddDocker(new DockerOptions(dockerHost));
+        return AddDocker(new DockerOptions { DockerHost = dockerHost });
     }
 
     /// <summary>
     /// Adds the docker tool pack (<c>docker_ps</c>, <c>docker_logs</c>, <c>docker_inspect</c>), and <c>docker_exec</c> when
     /// <see cref="DockerOptions.AllowExec"/> is set.
     /// </summary>
-    /// <param name="options">Daemon endpoint and exec opt-in.</param>
+    /// <param name="options">Daemon endpoint, docker executable, exec opt-in and default timeout.</param>
     /// <returns>This builder, for chaining.</returns>
     /// <exception cref="ArgumentNullException"><paramref name="options"/> is <see langword="null"/>.</exception>
+    /// <exception cref="ArgumentException"><see cref="DockerOptions.DockerHost"/> lacks a supported scheme, or <see cref="DockerOptions.DockerExecutable"/> is empty or whitespace.</exception>
+    /// <exception cref="ArgumentOutOfRangeException"><see cref="DockerOptions.DefaultTimeoutSeconds"/> is outside 1-600.</exception>
     public McpServerBuilder AddDocker(DockerOptions options)
     {
         ArgumentNullException.ThrowIfNull(options);
+        options.Validate();
 
-        var runner = new DockerCliRunner(options.DockerHost);
+        var runner = new DockerCliRunner(
+            options.DockerHost,
+            options.DockerExecutable,
+            TimeSpan.FromSeconds(options.DefaultTimeoutSeconds));
 
         AddTool(new DockerPsTool(runner));
         AddTool(new DockerLogsTool(runner));
@@ -203,7 +277,7 @@ public sealed class McpServerBuilder
 
         if (options.AllowExec)
         {
-            AddTool(new DockerExecTool(runner));
+            AddTool(new DockerExecTool(runner, options.DefaultTimeoutSeconds));
         }
 
         return this;
@@ -229,6 +303,31 @@ public sealed class McpServerBuilder
         return new McpServer(_name, _version, _tools.ToArray());
     }
 
+    private McpServerBuilder RegisterFileSystem(PathSandbox sandbox, FileSystemOptions options)
+    {
+        AddTool(new FsListTool(sandbox, options.MaxListEntries));
+        AddTool(new FsReadFileTool(sandbox, options.MaxReadFileBytes));
+        AddTool(new FsSearchTool(sandbox, options.MaxSearchResults));
+
+        if (!options.ReadOnly)
+        {
+            AddTool(new FsWriteFileTool(sandbox));
+        }
+
+        return this;
+    }
+
+    private McpServerBuilder RegisterDatabase(IDbConnectionFactory factory, DatabaseOptions options)
+    {
+        var commandTimeout = TimeSpan.FromSeconds(options.CommandTimeoutSeconds);
+
+        AddTool(new SqlQueryTool(factory, options.AllowWrites, options.MaxRows, commandTimeout));
+        AddTool(new SqlSchemaTool(factory));
+        AddTool(new SqlExplainTool(factory, commandTimeout));
+
+        return this;
+    }
+
     private static void ValidateToolName(string? name)
     {
         if (string.IsNullOrWhiteSpace(name))
@@ -247,10 +346,5 @@ public sealed class McpServerBuilder
         {
             throw new ArgumentException($"Tool name '{name}' must not contain whitespace.", nameof(name));
         }
-    }
-
-    private static bool IsValidDockerHost(string dockerHost)
-    {
-        return _dockerHostSchemes.Any(scheme => dockerHost.StartsWith(scheme, StringComparison.Ordinal));
     }
 }

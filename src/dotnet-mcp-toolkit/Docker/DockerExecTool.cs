@@ -1,6 +1,7 @@
 using System.Diagnostics.CodeAnalysis;
 using System.Text.Json;
 using DotnetMcpToolkit.FileSystem;
+using DotnetMcpToolkit.Options;
 
 namespace DotnetMcpToolkit.Docker;
 
@@ -10,7 +11,6 @@ namespace DotnetMcpToolkit.Docker;
 /// </summary>
 public sealed class DockerExecTool : DockerToolBase
 {
-    private const int _defaultTimeoutSeconds = 60;
     private const int _maxTimeoutSeconds = 600;
 
     private const int _exitCodeTimeout = 124;
@@ -18,7 +18,9 @@ public sealed class DockerExecTool : DockerToolBase
     private const int _exitCodeNotFound = 127;
     private const int _exitCodeDockerError = 125;
 
-    private static readonly JsonElement _inputSchema = JsonDocument.Parse("""
+    private readonly int _defaultTimeoutSeconds;
+
+    private static JsonElement CreateInputSchema(int defaultTimeoutSeconds) => JsonDocument.Parse($$"""
         {
             "type": "object",
             "properties": {
@@ -44,7 +46,7 @@ public sealed class DockerExecTool : DockerToolBase
                     "type": "integer",
                     "minimum": 1,
                     "maximum": 600,
-                    "description": "Time limit in seconds (1-600, default 60)"
+                    "description": "Time limit in seconds (1-600, default {{defaultTimeoutSeconds}})"
                 }
             },
             "required": ["container", "command"]
@@ -55,9 +57,16 @@ public sealed class DockerExecTool : DockerToolBase
     /// Creates the tool bound to the given <paramref name="runner"/>.
     /// </summary>
     /// <param name="runner">Runner for the daemon that hosts the container.</param>
-    public DockerExecTool(DockerCliRunner runner)
-        : base(runner, "docker_exec", "Runs a command inside a running container without a shell. Returns exitCode, stdout and stderr; a non-zero exitCode is a result, not an error.", _inputSchema)
+    /// <param name="defaultTimeoutSeconds">Time limit used when the call gives none, from 1 to 600. Defaults to 60.</param>
+    /// <exception cref="ArgumentNullException"><paramref name="runner"/> is <see langword="null"/>.</exception>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="defaultTimeoutSeconds"/> is outside 1-600.</exception>
+    public DockerExecTool(DockerCliRunner runner, int defaultTimeoutSeconds = 60)
+        : base(runner, "docker_exec", "Runs a command inside a running container without a shell. Returns exitCode, stdout and stderr; a non-zero exitCode is a result, not an error.", CreateInputSchema(defaultTimeoutSeconds))
     {
+        ArgumentOutOfRangeException.ThrowIfLessThan(defaultTimeoutSeconds, 1);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(defaultTimeoutSeconds, _maxTimeoutSeconds);
+
+        _defaultTimeoutSeconds = defaultTimeoutSeconds;
     }
 
     /// <inheritdoc />

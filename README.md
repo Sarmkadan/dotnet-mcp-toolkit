@@ -131,18 +131,20 @@ To enable `docker_exec`, pass `DockerOptions`:
 
 ```csharp
 using DotnetMcpToolkit;
-using DotnetMcpToolkit.Docker;
+using DotnetMcpToolkit.Options;
 
 var server = new McpServerBuilder("my-tools", "1.0.0")
-    .AddDocker(new DockerOptions(DockerHost: "unix:///var/run/docker.sock", AllowExec: true))
+    .AddDocker(new DockerOptions { DockerHost = "unix:///var/run/docker.sock", AllowExec = true })
     .Build();
 ```
 
 - `dockerHost` (`AddDocker(string? dockerHost = null)`) - daemon endpoint starting with `unix://`, `tcp://`, `npipe://` or `ssh://`; anything else throws `ArgumentException`. `null` uses `DOCKER_HOST` or the default socket.
 - `DockerOptions.DockerHost` - daemon endpoint, as for `dockerHost`.
 - `DockerOptions.AllowExec` - default `false`. When `true`, `docker_exec` is registered, because it runs commands inside containers.
+- `DockerOptions.DockerExecutable` - default `docker`.
+- `DockerOptions.DefaultTimeoutSeconds` - 1 to 600, default 60. It limits every docker command and is the default `timeoutSeconds` of `docker_exec`.
 
-The pack drives the `docker` CLI, so it must be installed and on `PATH`. Commands are limited to 60 seconds, except `docker_exec`, which uses its own `timeoutSeconds`.
+The pack drives the `docker` CLI, so it must be installed and on `PATH`. Commands are limited to `DefaultTimeoutSeconds`; `docker_exec` also accepts its own `timeoutSeconds` for each call.
 
 | Tool | Arguments | Returns |
 |------|-----------|---------|
@@ -243,6 +245,30 @@ Clients see `time_utc` with its schema. Calling it with `{ "format": "text" }` r
 dotnet add package DotnetMcpToolkit
 ```
 
+## Configuration
+
+Each pack has an options class in `DotnetMcpToolkit.Options`. They bind from `appsettings.json` (or any `IConfiguration`) and can be built into a server with `McpServerBuilder.FromOptions`. A pack is registered only when its section is present. Unset limits keep the defaults in the tables above.
+
+```json
+{
+  "Mcp": {
+    "Name": "my-tools",
+    "Version": "1.0.0",
+    "FileSystem": { "Root": "/srv/repo", "ReadOnly": true, "MaxReadFileBytes": 5242880 },
+    "Git": { "RepositoryPath": "/srv/repo", "MaxLogCount": 100 },
+    "Database": { "ConnectionString": "Data Source=app.db", "Provider": "Sqlite", "MaxRows": 200 },
+    "Docker": { "DockerHost": "unix:///var/run/docker.sock", "AllowExec": false }
+  }
+}
+```
+
+```csharp
+var options = configuration.GetSection("Mcp").Get<McpServerOptions>()!;
+var server = McpServerBuilder.FromOptions(options).Build();
+```
+
+`FromOptions` calls `McpServerOptions.Validate()` first, so a missing `Root`, a `Root` that is not a directory, or a limit outside its range fails at startup with an `ArgumentException` or `ArgumentOutOfRangeException` that names the property. Each pack's `Add*` overload takes the same options class, for example `AddFileSystem(FileSystemOptions)`.
+
 ## API overview
 
 | Type | Purpose |
@@ -254,7 +280,8 @@ dotnet add package DotnetMcpToolkit
 | `IMcpTransport` / `StdioTransport` | Message transport abstraction and the stdio implementation |
 | `DatabaseProvider` | Database engine selector; only `Sqlite` ships in this package |
 | `IDbConnectionFactory` | Opens connections for the database pack; implement it to plug in a provider |
-| `DockerOptions` | Docker pack configuration: daemon endpoint and the `AllowExec` opt-in |
+| `DockerOptions` | Docker pack configuration: daemon endpoint, the `AllowExec` opt-in and timeouts |
+| `McpServerOptions` (`DotnetMcpToolkit.Options`) | Root configuration for `McpServerBuilder.FromOptions`; holds one options class per pack |
 | `PathSandbox` | Confines filesystem tool paths to a root directory |
 
 ## Security model
@@ -266,7 +293,7 @@ The packs enforce their limits in code, not through the model's instructions. Th
 | Filesystem | Reads, search and writes, confined to `root`. Writes are on unless `readOnly: true`. | `readOnly: true` removes `fs_write_file`. | `PathSandbox.Resolve` joins the path to `root`, normalises `..` and rejects any result outside it. Each existing segment is checked for symbolic links whose final target lies outside `root`; dangling and circular links are rejected. Caps: `fs_read_file` refuses files over 10 MB unless `offset` or `limit` is given, and rejects binary files; `fs_search` skips files over 5 MB and binary files, does not follow links, and fails a regex that runs longer than 1 second; `fs_list` stops at 2000 entries. `fs_write_file` has no size cap. |
 | Database | Read-only: `allowWrites` is `false`. | `allowWrites: true` lets `sql_query` run writes and DDL. | `SqlStatementGuard` classifies the SQL text before it runs. Read-only mode accepts one statement that starts with `SELECT`, `WITH`, `EXPLAIN`, `SHOW`, `DESCRIBE`, `VALUES` or a `PRAGMA` without assignment, and rejects `INTO`, `FOR UPDATE`, `FOR SHARE`, `LOCK`, a second statement and any write keyword. SQL the guard cannot read, such as dollar quotes or backslashes in literals, is rejected. Values are bound as `@name` parameters, never spliced into the text. `sql_query` returns at most `maxRows` rows (default 500, max 5000) and times out after 30 seconds. `sql_explain` always applies the read-only check. |
 | Git | Read-only tools: `git_status`, `git_log`, `git_diff`, `git_blame`. | None; the pack has no write tools. | `git` gets its arguments through `ProcessStartInfo.ArgumentList`, never a shell. `GitCommandRunner` rejects `--upload-pack`, `--exec` and `-c core.*` config overrides. Paths follow `--`. Only `git_diff` takes a ref: it must match `^[A-Za-z0-9_./~^@{}-]+$` and must not start with `-`; it also passes `--no-ext-diff`. `GIT_TERMINAL_PROMPT=0` stops git from waiting on a credential prompt. |
-| Docker | `docker_ps`, `docker_logs`, `docker_inspect`. | `DockerOptions.AllowExec = true` adds `docker_exec`. | The `docker` CLI runs through `ArgumentList` with no shell. Container names must match `^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$`; `docker_inspect` targets have their own pattern, up to 256 characters. `docker_exec` takes a command array run without a shell, an absolute `workdir`, a validated `user`, and a `timeoutSeconds` from 1 to 600 (default 60). Other docker commands are killed after 60 seconds and report exit code 124. |
+| Docker | `docker_ps`, `docker_logs`, `docker_inspect`. | `DockerOptions.AllowExec = true` adds `docker_exec`. | The `docker` CLI runs through `ArgumentList` with no shell. Container names must match `^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$`; `docker_inspect` targets have their own pattern, up to 256 characters. `docker_exec` takes a command array run without a shell, an absolute `workdir`, a validated `user`, and a `timeoutSeconds` from 1 to 600 (default 60). Other docker commands are killed after `DefaultTimeoutSeconds` (60 by default) and report exit code 124. |
 
 The read-only SQL check is textual and does not depend on the provider. The planned PostgreSQL, SQL Server and MySQL packages are not implemented, so the check has only been tested against SQLite.
 

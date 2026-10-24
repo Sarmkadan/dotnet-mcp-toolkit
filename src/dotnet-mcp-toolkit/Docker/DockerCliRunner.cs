@@ -17,10 +17,11 @@ public sealed class DockerCliRunner
     private const int _exitCodeNotFound = 127;
     private const int _exitCodeTimeout = 124;
 
-    private static readonly TimeSpan _defaultTimeout = TimeSpan.FromSeconds(60);
+    private static readonly TimeSpan _fallbackTimeout = TimeSpan.FromSeconds(60);
 
     private readonly string? _dockerHost;
     private readonly string _dockerExecutable;
+    private readonly TimeSpan _defaultTimeout;
 
     /// <summary>
     /// Creates a runner for the docker CLI.
@@ -30,13 +31,19 @@ public sealed class DockerCliRunner
     /// <see langword="null"/> or empty uses the CLI default (<c>DOCKER_HOST</c> or the local socket).
     /// </param>
     /// <param name="dockerExecutable">The docker executable to launch. Defaults to <c>docker</c> on <c>PATH</c>.</param>
+    /// <param name="defaultTimeout">Run time limit used when <see cref="RunAsync"/> is not given one. Defaults to 60 seconds.</param>
     /// <exception cref="ArgumentException"><paramref name="dockerExecutable"/> is empty or whitespace.</exception>
-    public DockerCliRunner(string? dockerHost = null, string dockerExecutable = "docker")
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="defaultTimeout"/> is zero or negative.</exception>
+    public DockerCliRunner(string? dockerHost = null, string dockerExecutable = "docker", TimeSpan? defaultTimeout = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(dockerExecutable);
 
+        var timeout = defaultTimeout ?? _fallbackTimeout;
+        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(timeout, TimeSpan.Zero);
+
         _dockerHost = string.IsNullOrWhiteSpace(dockerHost) ? null : dockerHost;
         _dockerExecutable = dockerExecutable;
+        _defaultTimeout = timeout;
     }
 
     /// <summary>
@@ -44,7 +51,7 @@ public sealed class DockerCliRunner
     /// </summary>
     /// <param name="arguments">The arguments passed to docker, for example <c>["ps", "--format", "{{json .}}"]</c>.</param>
     /// <param name="ct">A token that kills the docker process tree when cancelled. Cancellation is rethrown to the caller.</param>
-    /// <param name="timeout">Maximum run time before the process tree is killed. Defaults to 60 seconds.</param>
+    /// <param name="timeout">Maximum run time before the process tree is killed. Defaults to the runner's default timeout.</param>
     /// <returns>
     /// The exit code and the captured output. A non-zero exit code is not an exception. A missing executable
     /// yields exit code <c>127</c>; a timeout yields exit code <c>124</c> with a note appended to standard error.

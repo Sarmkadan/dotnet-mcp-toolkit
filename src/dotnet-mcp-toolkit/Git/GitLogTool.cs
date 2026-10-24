@@ -11,18 +11,20 @@ namespace DotnetMcpToolkit.Git;
 public sealed class GitLogTool : GitToolBase
 {
     private const int _defaultMaxCount = 20;
-    private const int _maxMaxCount = 500;
 
     // Unit separator (U+001F) cannot appear in commit metadata, so it is a safe field delimiter.
     private const char _fieldSeparator = '\u001f';
 
-    private static readonly JsonElement _inputSchema = JsonDocument.Parse("""
+    private readonly int _maxCount;
+    private readonly int _defaultCount;
+
+    private static JsonElement CreateInputSchema(int maxCount) => JsonDocument.Parse($$"""
         {
             "type": "object",
             "properties": {
                 "maxCount": {
                     "type": "integer",
-                    "description": "Maximum number of commits to return (1-500, default 20)"
+                    "description": "Maximum number of commits to return (1-{{maxCount}}, default {{Math.Min(_defaultMaxCount, maxCount)}})"
                 },
                 "path": {
                     "type": "string",
@@ -44,9 +46,18 @@ public sealed class GitLogTool : GitToolBase
     /// Creates the tool bound to the given <paramref name="runner"/>.
     /// </summary>
     /// <param name="runner">Runner for the repository to inspect.</param>
-    public GitLogTool(GitCommandRunner runner)
-        : base(runner, "git_log", "Lists recent commits (sha, author, date, subject), optionally filtered by path, date or author.", _inputSchema)
+    /// <param name="maxCount">
+    /// Largest value a caller may request for <c>maxCount</c>; at least 1. The default is 20, or this value when it is smaller. Defaults to 500.
+    /// </param>
+    /// <exception cref="ArgumentNullException"><paramref name="runner"/> is <see langword="null"/>.</exception>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="maxCount"/> is less than 1.</exception>
+    public GitLogTool(GitCommandRunner runner, int maxCount = 500)
+        : base(runner, "git_log", "Lists recent commits (sha, author, date, subject), optionally filtered by path, date or author.", CreateInputSchema(maxCount))
     {
+        ArgumentOutOfRangeException.ThrowIfLessThan(maxCount, 1);
+
+        _maxCount = maxCount;
+        _defaultCount = Math.Min(_defaultMaxCount, maxCount);
     }
 
     /// <inheritdoc />
@@ -55,12 +66,12 @@ public sealed class GitLogTool : GitToolBase
         [NotNullWhen(true)] out IReadOnlyList<string>? gitArguments,
         [NotNullWhen(false)] out string? message)
     {
-        var maxCount = ToolArguments.GetInt32(arguments, "maxCount", _defaultMaxCount) ?? _defaultMaxCount;
+        var maxCount = ToolArguments.GetInt32(arguments, "maxCount", _defaultCount) ?? _defaultCount;
 
-        if (maxCount is < 1 or > _maxMaxCount)
+        if (maxCount is < 1 || maxCount > _maxCount)
         {
             gitArguments = null;
-            message = $"maxCount must be between 1 and {_maxMaxCount}";
+            message = $"maxCount must be between 1 and {_maxCount}";
 
             return false;
         }
