@@ -11,6 +11,8 @@ internal sealed class McpServer : IMcpServer
 {
     private const string _protocolVersion = "2025-06-18";
 
+    private int _running;
+
     /// <summary>
     /// Creates a server with the given identity and tools.
     /// </summary>
@@ -42,6 +44,11 @@ internal sealed class McpServer : IMcpServer
     {
         ArgumentNullException.ThrowIfNull(transport);
 
+        if (Interlocked.CompareExchange(ref _running, 1, 0) != 0)
+        {
+            throw new InvalidOperationException("Server is already running");
+        }
+
         try
         {
             while (true)
@@ -72,6 +79,10 @@ internal sealed class McpServer : IMcpServer
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             // Cancellation is the normal way to stop the loop.
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _running, 0);
         }
     }
 

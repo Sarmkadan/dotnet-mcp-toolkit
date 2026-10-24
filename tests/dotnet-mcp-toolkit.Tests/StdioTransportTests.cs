@@ -110,6 +110,48 @@ public class StdioTransportTests
         await Assert.ThrowsAsync<ArgumentException>(act);
     }
 
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    public async Task WriteMessageAsync_NullOrWhitespaceMessage_ThrowsArgumentException(string json)
+    {
+        // Arrange
+        await using var transport = new StdioTransport(InputOf(string.Empty), new MemoryStream());
+
+        // Act
+        var act = () => transport.WriteMessageAsync(json).AsTask();
+
+        // Assert
+        await Assert.ThrowsAnyAsync<ArgumentException>(act);
+    }
+
+    [Fact]
+    public async Task WriteMessageAsync_MessageContainingCarriageReturn_ThrowsArgumentException()
+    {
+        // Arrange
+        await using var transport = new StdioTransport(InputOf(string.Empty), new MemoryStream());
+
+        // Act
+        var act = () => transport.WriteMessageAsync("{\"a\":\r1}").AsTask();
+
+        // Assert
+        await Assert.ThrowsAsync<ArgumentException>(act);
+    }
+
+    [Fact]
+    public async Task WriteMessageAsync_AfterDispose_ThrowsObjectDisposedException()
+    {
+        // Arrange
+        var transport = new StdioTransport(InputOf(string.Empty), new MemoryStream());
+        await transport.DisposeAsync();
+
+        // Act
+        var act = () => transport.WriteMessageAsync("{\"a\":1}").AsTask();
+
+        // Assert
+        await Assert.ThrowsAsync<ObjectDisposedException>(act);
+    }
+
     [Fact]
     public async Task WriteMessageAsync_ConcurrentWrites_DoNotInterleave()
     {

@@ -24,6 +24,10 @@ namespace DotnetMcpToolkit;
 /// </example>
 public sealed class McpServerBuilder
 {
+    private const int _maxToolNameLength = 64;
+
+    private static readonly string[] _dockerHostSchemes = ["unix://", "tcp://", "npipe://", "ssh://"];
+
     private readonly string _name;
     private readonly string _version;
     private readonly List<IMcpTool> _tools = [];
@@ -53,11 +57,13 @@ public sealed class McpServerBuilder
     /// <param name="tool">The tool to expose.</param>
     /// <returns>This builder, for chaining.</returns>
     /// <exception cref="ArgumentNullException"><paramref name="tool"/> is <see langword="null"/>.</exception>
-    /// <exception cref="ArgumentException">The tool's <see cref="IMcpTool.Name"/> is null or whitespace.</exception>
+    /// <exception cref="ArgumentException">
+    /// The tool's <see cref="IMcpTool.Name"/> is null or whitespace, contains whitespace characters, or is longer than 64 characters.
+    /// </exception>
     public McpServerBuilder AddTool(IMcpTool tool)
     {
         ArgumentNullException.ThrowIfNull(tool);
-        ArgumentException.ThrowIfNullOrWhiteSpace(tool.Name);
+        ValidateToolName(tool.Name);
 
         _tools.Add(tool);
         return this;
@@ -71,10 +77,12 @@ public sealed class McpServerBuilder
     /// <param name="readOnly">When <see langword="true"/>, write tools are not registered.</param>
     /// <returns>This builder, for chaining.</returns>
     /// <exception cref="ArgumentNullException"><paramref name="root"/> is <see langword="null"/>.</exception>
-    /// <exception cref="ArgumentException"><paramref name="root"/> is empty or whitespace.</exception>
+    /// <exception cref="ArgumentException"><paramref name="root"/> is <see langword="null"/>, empty or whitespace.</exception>
     /// <exception cref="DirectoryNotFoundException"><paramref name="root"/> does not exist.</exception>
     public McpServerBuilder AddFileSystem(string root, bool readOnly = false)
     {
+        ArgumentException.ThrowIfNullOrWhiteSpace(root);
+
         var sandbox = new PathSandbox(root);
 
         AddTool(new FsListTool(sandbox));
@@ -94,10 +102,12 @@ public sealed class McpServerBuilder
     /// </summary>
     /// <param name="repositoryPath">Path to the working tree.</param>
     /// <returns>This builder, for chaining.</returns>
-    /// <exception cref="ArgumentException"><paramref name="repositoryPath"/> is empty or whitespace.</exception>
+    /// <exception cref="ArgumentException"><paramref name="repositoryPath"/> is <see langword="null"/>, empty or whitespace.</exception>
     /// <exception cref="DirectoryNotFoundException"><paramref name="repositoryPath"/> does not exist.</exception>
     public McpServerBuilder AddGit(string repositoryPath)
     {
+        ArgumentException.ThrowIfNullOrWhiteSpace(repositoryPath);
+
         var runner = new GitCommandRunner(repositoryPath);
 
         AddTool(new GitStatusTool(runner));
@@ -117,10 +127,18 @@ public sealed class McpServerBuilder
     /// <param name="provider">Database engine.</param>
     /// <param name="allowWrites">Whether <c>INSERT</c>/<c>UPDATE</c>/<c>DELETE</c>/DDL statements are permitted.</param>
     /// <returns>This builder, for chaining.</returns>
-    /// <exception cref="ArgumentException"><paramref name="connectionString"/> is empty or whitespace.</exception>
+    /// <exception cref="ArgumentException"><paramref name="connectionString"/> is <see langword="null"/>, empty or whitespace.</exception>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="provider"/> is not a defined <see cref="DatabaseProvider"/> value.</exception>
     /// <exception cref="NotSupportedException"><paramref name="provider"/> is not shipped in this package.</exception>
     public McpServerBuilder AddDatabase(string connectionString, DatabaseProvider provider, bool allowWrites = false)
     {
+        ArgumentException.ThrowIfNullOrWhiteSpace(connectionString);
+
+        if (!Enum.IsDefined(provider))
+        {
+            throw new ArgumentOutOfRangeException(nameof(provider), provider, "Unknown database provider.");
+        }
+
         return provider switch
         {
             DatabaseProvider.Sqlite => AddDatabase(new SqliteConnectionFactory(connectionString), allowWrites),
@@ -148,10 +166,21 @@ public sealed class McpServerBuilder
     /// Adds the read-only docker tool pack (<c>docker_ps</c>, <c>docker_logs</c>, <c>docker_inspect</c>).
     /// <c>docker_exec</c> is not registered; use <see cref="AddDocker(DockerOptions)"/> with <see cref="DockerOptions.AllowExec"/> to opt in.
     /// </summary>
-    /// <param name="dockerHost">Docker daemon endpoint; <see langword="null"/> uses <c>DOCKER_HOST</c> or the default socket.</param>
+    /// <param name="dockerHost">
+    /// Docker daemon endpoint starting with <c>unix://</c>, <c>tcp://</c>, <c>npipe://</c> or <c>ssh://</c>;
+    /// <see langword="null"/> uses <c>DOCKER_HOST</c> or the default socket.
+    /// </param>
     /// <returns>This builder, for chaining.</returns>
+    /// <exception cref="ArgumentException"><paramref name="dockerHost"/> is empty, whitespace or lacks a supported scheme.</exception>
     public McpServerBuilder AddDocker(string? dockerHost = null)
     {
+        if (dockerHost is not null && !IsValidDockerHost(dockerHost))
+        {
+            throw new ArgumentException(
+                $"Docker host '{dockerHost}' must start with one of: {string.Join(", ", _dockerHostSchemes)}.",
+                nameof(dockerHost));
+        }
+
         return AddDocker(new DockerOptions(dockerHost));
     }
 
@@ -198,5 +227,30 @@ public sealed class McpServerBuilder
         }
 
         return new McpServer(_name, _version, _tools.ToArray());
+    }
+
+    private static void ValidateToolName(string? name)
+    {
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            throw new ArgumentException($"Tool name '{name}' must not be null or whitespace.", nameof(name));
+        }
+
+        if (name.Length > _maxToolNameLength)
+        {
+            throw new ArgumentException(
+                $"Tool name '{name}' is {name.Length} characters long; the maximum is {_maxToolNameLength}.",
+                nameof(name));
+        }
+
+        if (name.Any(char.IsWhiteSpace))
+        {
+            throw new ArgumentException($"Tool name '{name}' must not contain whitespace.", nameof(name));
+        }
+    }
+
+    private static bool IsValidDockerHost(string dockerHost)
+    {
+        return _dockerHostSchemes.Any(scheme => dockerHost.StartsWith(scheme, StringComparison.Ordinal));
     }
 }
