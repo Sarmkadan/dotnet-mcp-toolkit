@@ -1,4 +1,5 @@
 using DotnetMcpToolkit.FileSystem;
+using DotnetMcpToolkit.Git;
 
 namespace DotnetMcpToolkit;
 
@@ -90,9 +91,19 @@ public sealed class McpServerBuilder
     /// Adds the git tool pack (<c>git_status</c>, <c>git_log</c>, <c>git_diff</c>, <c>git_blame</c>) for a repository.
     /// </summary>
     /// <param name="repositoryPath">Path to the working tree.</param>
+    /// <returns>This builder, for chaining.</returns>
+    /// <exception cref="ArgumentException"><paramref name="repositoryPath"/> is empty or whitespace.</exception>
+    /// <exception cref="DirectoryNotFoundException"><paramref name="repositoryPath"/> does not exist.</exception>
     public McpServerBuilder AddGit(string repositoryPath)
     {
-        throw new NotImplementedException();
+        var runner = new GitCommandRunner(repositoryPath);
+
+        AddTool(new GitStatusTool(runner));
+        AddTool(new GitLogTool(runner));
+        AddTool(new GitDiffTool(runner));
+        AddTool(new GitBlameTool(runner));
+
+        return this;
     }
 
     /// <summary>
