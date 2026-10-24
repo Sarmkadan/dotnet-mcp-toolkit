@@ -85,7 +85,7 @@ public sealed class FsListTool : IMcpTool
                 string relativePath;
                 try
                 {
-                    relativePath = _sandbox.MakeRelative(entry);
+                    relativePath = _sandbox.ToRelative(entry);
                 }
                 catch
                 {
