@@ -6,10 +6,12 @@ namespace DotnetMcpToolkit.Tests.Git;
 public sealed class GitDiffToolTests : IDisposable
 {
     private readonly GitTestRepository _repo = new();
+    private readonly GitRepoFixture _fixture = new();
 
     public void Dispose()
     {
         _repo.Dispose();
+        _fixture.Dispose();
     }
 
     [Fact]
@@ -63,6 +65,50 @@ public sealed class GitDiffToolTests : IDisposable
         var tool = new GitDiffTool(new GitCommandRunner(_repo.Root));
 
         var result = await tool.InvokeAsync(JsonSerializer.SerializeToElement(new { contextLines }));
+
+        Assert.True(result.IsError);
+    }
+
+    [Fact]
+    public async Task InvokeAsync_RefHeadTilde1_ShowsLineChange()
+    {
+        var tool = new GitDiffTool(new GitCommandRunner(_fixture.Root));
+
+        var result = await tool.InvokeAsync(JsonSerializer.SerializeToElement(new { @ref = "HEAD~1" }));
+
+        Assert.False(result.IsError);
+        Assert.Contains("-two", result.Content[0].Text);
+        Assert.Contains("+TWO", result.Content[0].Text);
+    }
+
+    [Fact]
+    public async Task InvokeAsync_WorkingTree_ShowsUncommittedChange()
+    {
+        var tool = new GitDiffTool(new GitCommandRunner(_fixture.Root));
+
+        var result = await tool.InvokeAsync(null);
+
+        Assert.False(result.IsError);
+        Assert.Contains("b.txt", result.Content[0].Text);
+        Assert.Contains("+buzz", result.Content[0].Text);
+    }
+
+    [Fact]
+    public async Task InvokeAsync_RefStartingWithDash_ReturnsError()
+    {
+        var tool = new GitDiffTool(new GitCommandRunner(_fixture.Root));
+
+        var result = await tool.InvokeAsync(JsonSerializer.SerializeToElement(new { @ref = "--output=/tmp/x" }));
+
+        Assert.True(result.IsError);
+    }
+
+    [Fact]
+    public async Task InvokeAsync_UnknownRef_ReturnsError()
+    {
+        var tool = new GitDiffTool(new GitCommandRunner(_fixture.Root));
+
+        var result = await tool.InvokeAsync(JsonSerializer.SerializeToElement(new { @ref = "no-such-ref" }));
 
         Assert.True(result.IsError);
     }

@@ -7,6 +7,7 @@ public sealed class GitCommandRunnerTests : IDisposable
 {
     private readonly string _base = Path.Combine(Path.GetTempPath(), "gitcommandrunner-" + Guid.NewGuid().ToString("N"));
     private readonly string _repo;
+    private readonly GitRepoFixture _fixture = new();
 
     public GitCommandRunnerTests()
     {
@@ -18,6 +19,7 @@ public sealed class GitCommandRunnerTests : IDisposable
     public void Dispose()
     {
         Directory.Delete(_base, recursive: true);
+        _fixture.Dispose();
     }
 
     [Fact]
@@ -94,6 +96,52 @@ public sealed class GitCommandRunnerTests : IDisposable
         var runner = new GitCommandRunner(bare);
 
         Assert.False(await runner.IsRepositoryAsync(CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task RunAsync_RevParse_ReturnsZeroExitAndTrue()
+    {
+        var runner = new GitCommandRunner(_fixture.Root);
+
+        var result = await runner.RunAsync(["rev-parse", "--is-inside-work-tree"], CancellationToken.None);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Equal("true", result.StandardOutput.Trim());
+    }
+
+    [Fact]
+    public async Task RunAsync_InvalidCommand_ReturnsNonZeroWithStderr()
+    {
+        var runner = new GitCommandRunner(_fixture.Root);
+
+        var result = await runner.RunAsync(["no-such-command"], CancellationToken.None);
+
+        Assert.NotEqual(0, result.ExitCode);
+        Assert.Contains("no-such-command", result.StandardError);
+    }
+
+    [Fact]
+    public async Task RunAsync_ArgumentStartingWithUploadPack_ThrowsArgumentException()
+    {
+        var runner = new GitCommandRunner(_fixture.Root);
+
+        await Assert.ThrowsAsync<ArgumentException>(() => runner.RunAsync(["ls-remote", "--upload-pack=/bin/sh"], CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task RunAsync_CancelledToken_ThrowsOperationCanceledException()
+    {
+        var runner = new GitCommandRunner(_fixture.Root);
+        using var cts = new CancellationTokenSource();
+        await cts.CancelAsync();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => runner.RunAsync(["status"], cts.Token));
+    }
+
+    [Fact]
+    public void Constructor_NonExistentPath_ThrowsDirectoryNotFoundException()
+    {
+        Assert.Throws<DirectoryNotFoundException>(() => new GitCommandRunner(Path.Combine(_base, "nonexistent")));
     }
 
     private static void Git(string workingDirectory, params string[] arguments)

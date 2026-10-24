@@ -6,10 +6,12 @@ namespace DotnetMcpToolkit.Tests.Git;
 public sealed class GitBlameToolTests : IDisposable
 {
     private readonly GitTestRepository _repo = new();
+    private readonly GitRepoFixture _fixture = new();
 
     public void Dispose()
     {
         _repo.Dispose();
+        _fixture.Dispose();
     }
 
     [Fact]
@@ -65,6 +67,44 @@ public sealed class GitBlameToolTests : IDisposable
         var tool = new GitBlameTool(new GitCommandRunner(_repo.Root));
 
         var result = await tool.InvokeAsync(JsonSerializer.SerializeToElement(new { path = "a.txt", startLine = 5, endLine = 2 }));
+
+        Assert.True(result.IsError);
+    }
+
+    [Fact]
+    public async Task InvokeAsync_FileWithTwoAuthorsCommits_ReturnsPerLineSha()
+    {
+        var head = _fixture.Git("rev-parse", "HEAD").Trim();
+        var parent = _fixture.Git("rev-parse", "HEAD~1").Trim();
+        var tool = new GitBlameTool(new GitCommandRunner(_fixture.Root));
+
+        var result = await tool.InvokeAsync(JsonSerializer.SerializeToElement(new { path = "a.txt" }));
+
+        var lines = ParseJson(result).EnumerateArray().ToList();
+        Assert.False(result.IsError);
+        Assert.Equal(parent, lines[0].GetProperty("sha").GetString());
+        Assert.Equal(head, lines[1].GetProperty("sha").GetString());
+    }
+
+    [Fact]
+    public async Task InvokeAsync_FixtureLineRange_ReturnsOnlyRequestedLines()
+    {
+        var tool = new GitBlameTool(new GitCommandRunner(_fixture.Root));
+
+        var result = await tool.InvokeAsync(JsonSerializer.SerializeToElement(new { path = "a.txt", startLine = 2, endLine = 3 }));
+
+        var lines = ParseJson(result).EnumerateArray().ToList();
+        Assert.Equal(2, lines.Count);
+        Assert.Equal(2, lines[0].GetProperty("line").GetInt32());
+        Assert.Equal("TWO", lines[0].GetProperty("text").GetString());
+    }
+
+    [Fact]
+    public async Task InvokeAsync_FixtureMissingPath_ReturnsError()
+    {
+        var tool = new GitBlameTool(new GitCommandRunner(_fixture.Root));
+
+        var result = await tool.InvokeAsync(JsonSerializer.SerializeToElement(new { path = "missing.txt" }));
 
         Assert.True(result.IsError);
     }

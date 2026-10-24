@@ -6,10 +6,12 @@ namespace DotnetMcpToolkit.Tests.Git;
 public sealed class GitStatusToolTests : IDisposable
 {
     private readonly GitTestRepository _repo = new();
+    private readonly GitRepoFixture _fixture = new();
 
     public void Dispose()
     {
         _repo.Dispose();
+        _fixture.Dispose();
     }
 
     [Fact]
@@ -61,6 +63,31 @@ public sealed class GitStatusToolTests : IDisposable
 
         Assert.Equal(1, root.GetProperty("ahead").GetInt32());
         Assert.Equal(0, root.GetProperty("behind").GetInt32());
+    }
+
+    [Fact]
+    public async Task InvokeAsync_DirtyTree_ReportsModifiedAndUntracked()
+    {
+        var tool = new GitStatusTool(new GitCommandRunner(_fixture.Root));
+
+        var result = await tool.InvokeAsync(null);
+
+        var entries = ParseJson(result).GetProperty("entries").EnumerateArray()
+            .Select(e => (Status: e.GetProperty("status").GetString(), Path: e.GetProperty("path").GetString()))
+            .ToList();
+        Assert.False(result.IsError);
+        Assert.Contains((" M", "b.txt"), entries);
+        Assert.Contains(("??", "c.txt"), entries);
+    }
+
+    [Fact]
+    public async Task InvokeAsync_ReportsBranchMain()
+    {
+        var tool = new GitStatusTool(new GitCommandRunner(_fixture.Root));
+
+        var root = ParseJson(await tool.InvokeAsync(null));
+
+        Assert.Equal("main", root.GetProperty("branch").GetString());
     }
 
     private static JsonElement ParseJson(DotnetMcpToolkit.McpToolResult result)
