@@ -21,23 +21,18 @@ public sealed class FsWriteFileToolTests : IDisposable
     }
 
     [Fact]
-    public async Task InvokeAsync_NewFile_WritesUtf8WithoutBom()
+    public async Task InvokeAsync_NewFileInNewDirectory_CreatesParentsAndWrites()
     {
-        var args = Args(new { path = "a.txt", content = "héllo" });
-
-        var result = await _tool.InvokeAsync(args);
+        var result = await _tool.InvokeAsync(Args("""{ "path": "new/deep/a.txt", "content": "x" }"""));
 
         Assert.False(result.IsError);
-        var bytes = await File.ReadAllBytesAsync(Path.Combine(_root, "a.txt"));
-        Assert.Equal(Encoding.UTF8.GetBytes("héllo"), bytes);
+        Assert.Equal("x", await File.ReadAllTextAsync(Path.Combine(_root, "new", "deep", "a.txt")));
     }
 
     [Fact]
     public async Task InvokeAsync_NewFile_ReturnsPathAndBytesWritten()
     {
-        var args = Args(new { path = "a.txt", content = "héllo" });
-
-        var result = await _tool.InvokeAsync(args);
+        var result = await _tool.InvokeAsync(Args("""{ "path": "a.txt", "content": "héllo" }"""));
 
         using var doc = JsonDocument.Parse(result.Content[0].Text!);
         Assert.Equal("a.txt", doc.RootElement.GetProperty("path").GetString());
@@ -45,35 +40,21 @@ public sealed class FsWriteFileToolTests : IDisposable
     }
 
     [Fact]
-    public async Task InvokeAsync_MissingParentDirectory_CreatesIt()
-    {
-        var args = Args(new { path = "sub/dir/a.txt", content = "x" });
-
-        var result = await _tool.InvokeAsync(args);
-
-        Assert.False(result.IsError);
-        Assert.True(File.Exists(Path.Combine(_root, "sub", "dir", "a.txt")));
-    }
-
-    [Fact]
     public async Task InvokeAsync_MissingParentAndCreateDirectoriesFalse_ReturnsError()
     {
-        var args = Args(new { path = "sub/a.txt", content = "x", createDirectories = false });
-
-        var result = await _tool.InvokeAsync(args);
+        var result = await _tool.InvokeAsync(Args("""{ "path": "sub/a.txt", "content": "x", "createDirectories": false }"""));
 
         Assert.True(result.IsError);
         Assert.False(Directory.Exists(Path.Combine(_root, "sub")));
     }
 
     [Fact]
-    public async Task InvokeAsync_ExistingFileAndOverwriteFalse_ReturnsErrorAndKeepsContent()
+    public async Task InvokeAsync_OverwriteFalseOnExistingFile_ReturnsErrorAndKeepsContent()
     {
         var file = Path.Combine(_root, "a.txt");
         await File.WriteAllTextAsync(file, "original");
-        var args = Args(new { path = "a.txt", content = "new", overwrite = false });
 
-        var result = await _tool.InvokeAsync(args);
+        var result = await _tool.InvokeAsync(Args("""{ "path": "a.txt", "content": "new", "overwrite": false }"""));
 
         Assert.True(result.IsError);
         Assert.Equal("original", await File.ReadAllTextAsync(file));
@@ -84,35 +65,43 @@ public sealed class FsWriteFileToolTests : IDisposable
     {
         var file = Path.Combine(_root, "a.txt");
         await File.WriteAllTextAsync(file, "original");
-        var args = Args(new { path = "a.txt", content = "new" });
 
-        var result = await _tool.InvokeAsync(args);
+        var result = await _tool.InvokeAsync(Args("""{ "path": "a.txt", "content": "new" }"""));
 
         Assert.False(result.IsError);
         Assert.Equal("new", await File.ReadAllTextAsync(file));
     }
 
     [Fact]
-    public async Task InvokeAsync_PathEscapingSandbox_ReturnsErrorAndWritesNothing()
+    public async Task InvokeAsync_Utf8Content_WritesWithoutBom()
     {
-        var args = Args(new { path = "../escape.txt", content = "x" });
+        var result = await _tool.InvokeAsync(Args("""{ "path": "a.txt", "content": "héllo" }"""));
 
-        var result = await _tool.InvokeAsync(args);
+        Assert.False(result.IsError);
+        var bytes = await File.ReadAllBytesAsync(Path.Combine(_root, "a.txt"));
+        Assert.NotEqual([0xEF, 0xBB, 0xBF], bytes.Take(3).ToArray());
+        Assert.Equal(Encoding.UTF8.GetBytes("héllo"), bytes);
+    }
+
+    [Fact]
+    public async Task InvokeAsync_PathEscapesRoot_ReturnsErrorAndWritesNothing()
+    {
+        var escapeName = "escape-" + Guid.NewGuid().ToString("N") + ".txt";
+
+        var result = await _tool.InvokeAsync(Args($$"""{ "path": "../{{escapeName}}", "content": "x" }"""));
 
         Assert.True(result.IsError);
-        Assert.False(File.Exists(Path.Combine(Path.GetDirectoryName(_root)!, "escape.txt")));
+        Assert.False(File.Exists(Path.Combine(Path.GetDirectoryName(_root)!, escapeName)));
+        Assert.Empty(Directory.GetFileSystemEntries(_root));
     }
 
     [Fact]
     public async Task InvokeAsync_MissingContent_ReturnsError()
     {
-        var args = Args(new { path = "a.txt" });
-
-        var result = await _tool.InvokeAsync(args);
+        var result = await _tool.InvokeAsync(Args("""{ "path": "a.txt" }"""));
 
         Assert.True(result.IsError);
     }
 
-    private static JsonElement Args(object value) =>
-        JsonSerializer.Deserialize<JsonElement>(JsonSerializer.Serialize(value));
+    private static JsonElement Args(string json) => JsonDocument.Parse(json).RootElement.Clone();
 }

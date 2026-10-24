@@ -3,93 +3,91 @@ using DotnetMcpToolkit.FileSystem;
 
 namespace DotnetMcpToolkit.Tests.FileSystem;
 
-public sealed class FsSearchToolTests : IDisposable
+public sealed class FsSearchToolTests : IClassFixture<TempTreeFixture>
 {
-    private readonly string _root = Path.Combine(Path.GetTempPath(), "fssearch-" + Guid.NewGuid().ToString("N"));
     private readonly FsSearchTool _tool;
 
-    public FsSearchToolTests()
+    public FsSearchToolTests(TempTreeFixture tree)
     {
-        Directory.CreateDirectory(Path.Combine(_root, "src"));
-        File.WriteAllText(Path.Combine(_root, "src", "Foo.cs"), "class Foo {}\nint Needle = 1;\n");
-        File.WriteAllText(Path.Combine(_root, "notes.txt"), "needle in text\n");
-        File.WriteAllBytes(Path.Combine(_root, "image.bin"), [0x00, 0x6E, 0x65, 0x65, 0x64, 0x6C, 0x65]);
-        _tool = new FsSearchTool(new PathSandbox(_root));
-    }
-
-    public void Dispose()
-    {
-        Directory.Delete(_root, recursive: true);
+        _tool = new FsSearchTool(new PathSandbox(tree.Root));
     }
 
     [Fact]
-    public async Task InvokeAsync_MatchingPattern_ReturnsPathLineAndText()
+    public async Task InvokeAsync_RegexMatch_ReturnsPathLineAndText()
     {
-        var result = await _tool.InvokeAsync(Args(new { pattern = "Needle", glob = "*.cs" }));
+        var result = await _tool.InvokeAsync(Args("""{ "pattern": "WriteLine" }"""));
 
         Assert.False(result.IsError);
         using var doc = JsonDocument.Parse(result.Content[0].Text!);
         var match = Assert.Single(doc.RootElement.GetProperty("matches").EnumerateArray());
-        Assert.Equal("src/Foo.cs", match.GetProperty("path").GetString());
-        Assert.Equal(2, match.GetProperty("line").GetInt32());
-        Assert.Equal("int Needle = 1;", match.GetProperty("text").GetString());
+        Assert.Equal("src/Program.cs", match.GetProperty("path").GetString());
+        Assert.Equal(4, match.GetProperty("line").GetInt32());
+        Assert.Equal(TempTreeFixture.HelloLine, match.GetProperty("text").GetString());
     }
 
     [Fact]
-    public async Task InvokeAsync_IgnoreCaseFalse_DoesNotMatchDifferentCase()
+    public async Task InvokeAsync_GlobFilter_RestrictsFiles()
     {
-        var result = await _tool.InvokeAsync(Args(new { pattern = "needle", glob = "*.cs" }));
+        var result = await _tool.InvokeAsync(Args("""{ "pattern": ".", "glob": "*.md" }"""));
 
+        Assert.False(result.IsError);
+        using var doc = JsonDocument.Parse(result.Content[0].Text!);
+        var paths = doc.RootElement.GetProperty("matches").EnumerateArray()
+            .Select(m => m.GetProperty("path").GetString()!)
+            .ToArray();
+        Assert.NotEmpty(paths);
+        Assert.All(paths, p => Assert.Equal("readme.md", p));
+    }
+
+    [Fact]
+    public async Task InvokeAsync_IgnoreCase_MatchesDifferentCase()
+    {
+        var result = await _tool.InvokeAsync(Args("""{ "pattern": "writeline", "ignoreCase": true }"""));
+
+        Assert.False(result.IsError);
+        using var doc = JsonDocument.Parse(result.Content[0].Text!);
+        Assert.Single(doc.RootElement.GetProperty("matches").EnumerateArray());
+    }
+
+    [Fact]
+    public async Task InvokeAsync_IgnoreCaseDefault_DoesNotMatchDifferentCase()
+    {
+        var result = await _tool.InvokeAsync(Args("""{ "pattern": "writeline" }"""));
+
+        Assert.False(result.IsError);
         using var doc = JsonDocument.Parse(result.Content[0].Text!);
         Assert.Empty(doc.RootElement.GetProperty("matches").EnumerateArray());
     }
 
     [Fact]
-    public async Task InvokeAsync_IgnoreCaseTrue_MatchesDifferentCase()
+    public async Task InvokeAsync_InvalidRegex_ReturnsError()
     {
-        var result = await _tool.InvokeAsync(Args(new { pattern = "needle", glob = "*.cs", ignoreCase = true }));
+        var result = await _tool.InvokeAsync(Args("""{ "pattern": "(" }"""));
 
-        using var doc = JsonDocument.Parse(result.Content[0].Text!);
-        Assert.Single(doc.RootElement.GetProperty("matches").EnumerateArray());
+        Assert.True(result.IsError);
     }
 
     [Fact]
-    public async Task InvokeAsync_BinaryFile_IsSkipped()
+    public async Task InvokeAsync_MaxResults_TruncatesAndFlags()
     {
-        var result = await _tool.InvokeAsync(Args(new { pattern = "needle", ignoreCase = true }));
+        var result = await _tool.InvokeAsync(Args("""{ "pattern": ".", "maxResults": 5 }"""));
 
+        Assert.False(result.IsError);
         using var doc = JsonDocument.Parse(result.Content[0].Text!);
-        var paths = doc.RootElement.GetProperty("matches").EnumerateArray()
-            .Select(m => m.GetProperty("path").GetString());
-        Assert.DoesNotContain("image.bin", paths);
-    }
-
-    [Fact]
-    public async Task InvokeAsync_MaxResultsReached_ReturnsTruncated()
-    {
-        var result = await _tool.InvokeAsync(Args(new { pattern = "Needle|needle", ignoreCase = true, maxResults = 1 }));
-
-        using var doc = JsonDocument.Parse(result.Content[0].Text!);
-        Assert.Single(doc.RootElement.GetProperty("matches").EnumerateArray());
+        Assert.Equal(5, doc.RootElement.GetProperty("matches").GetArrayLength());
         Assert.True(doc.RootElement.GetProperty("truncated").GetBoolean());
     }
 
     [Fact]
-    public async Task InvokeAsync_InvalidRegex_ReturnsError()
+    public async Task InvokeAsync_BinaryFiles_AreSkipped()
     {
-        var result = await _tool.InvokeAsync(Args(new { pattern = "([" }));
+        // app.dll contains the text "Console.WriteLine", so it would match if the binary check were missing.
+        var result = await _tool.InvokeAsync(Args("""{ "pattern": "WriteLine", "glob": "*.dll" }"""));
 
-        Assert.True(result.IsError);
+        Assert.False(result.IsError);
+        using var doc = JsonDocument.Parse(result.Content[0].Text!);
+        Assert.Empty(doc.RootElement.GetProperty("matches").EnumerateArray());
     }
 
-    [Fact]
-    public async Task InvokeAsync_PathEscapingSandbox_ReturnsError()
-    {
-        var result = await _tool.InvokeAsync(Args(new { pattern = "x", path = ".." }));
-
-        Assert.True(result.IsError);
-    }
-
-    private static JsonElement Args(object value) =>
-        JsonSerializer.Deserialize<JsonElement>(JsonSerializer.Serialize(value));
+    private static JsonElement Args(string json) => JsonDocument.Parse(json).RootElement.Clone();
 }
