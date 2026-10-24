@@ -9,7 +9,7 @@ public sealed class McpServerBuilderDatabaseTests
     {
         var builder = new McpServerBuilder("test", "1.0.0").AddDatabase("Data Source=:memory:", DatabaseProvider.Sqlite);
 
-        Assert.Equal(["sql_query"], builder.Tools.Select(t => t.Name));
+        Assert.Equal(["sql_query", "sql_schema", "sql_explain"], builder.Tools.Select(t => t.Name));
     }
 
     [Theory]
@@ -26,11 +26,11 @@ public sealed class McpServerBuilderDatabaseTests
     }
 
     [Fact]
-    public void AddDatabase_CustomFactory_RegistersSqlQueryTool()
+    public void AddDatabase_CustomFactory_RegistersDatabaseTools()
     {
         var builder = new McpServerBuilder("test", "1.0.0").AddDatabase(new SqliteConnectionFactory("Data Source=:memory:"), allowWrites: true);
 
-        Assert.Equal(["sql_query"], builder.Tools.Select(t => t.Name));
+        Assert.Equal(["sql_query", "sql_schema", "sql_explain"], builder.Tools.Select(t => t.Name));
     }
 
     [Fact]

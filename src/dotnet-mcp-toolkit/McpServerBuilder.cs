@@ -128,7 +128,7 @@ public sealed class McpServerBuilder
     }
 
     /// <summary>
-    /// Adds the database tool pack (<c>sql_query</c>) over a custom connection factory.
+    /// Adds the database tool pack (<c>sql_query</c>, <c>sql_schema</c>, <c>sql_explain</c>) over a custom connection factory.
     /// </summary>
     /// <param name="factory">Source of database connections.</param>
     /// <param name="allowWrites">Whether <c>INSERT</c>/<c>UPDATE</c>/<c>DELETE</c>/DDL statements are permitted.</param>
@@ -137,6 +137,8 @@ public sealed class McpServerBuilder
     public McpServerBuilder AddDatabase(IDbConnectionFactory factory, bool allowWrites = false)
     {
         AddTool(new SqlQueryTool(factory, allowWrites));
+        AddTool(new SqlSchemaTool(factory));
+        AddTool(new SqlExplainTool(factory));
 
         return this;
     }
