@@ -1,3 +1,4 @@
+using DotnetMcpToolkit.Database;
 using DotnetMcpToolkit.FileSystem;
 using DotnetMcpToolkit.Git;
 
@@ -107,14 +108,37 @@ public sealed class McpServerBuilder
     }
 
     /// <summary>
-    /// Adds the database tool pack (<c>sql_schema</c>, <c>sql_query</c>, <c>sql_explain</c>). Queries are read-only by default.
+    /// Adds the database tool pack for a built-in provider. Queries are read-only by default.
+    /// Only <see cref="DatabaseProvider.Sqlite"/> ships in this package; other providers come from their own packages
+    /// and are added through <see cref="AddDatabase(IDbConnectionFactory, bool)"/>.
     /// </summary>
     /// <param name="connectionString">ADO.NET connection string.</param>
     /// <param name="provider">Database engine.</param>
     /// <param name="allowWrites">Whether <c>INSERT</c>/<c>UPDATE</c>/<c>DELETE</c>/DDL statements are permitted.</param>
+    /// <returns>This builder, for chaining.</returns>
+    /// <exception cref="ArgumentException"><paramref name="connectionString"/> is empty or whitespace.</exception>
+    /// <exception cref="NotSupportedException"><paramref name="provider"/> is not shipped in this package.</exception>
     public McpServerBuilder AddDatabase(string connectionString, DatabaseProvider provider, bool allowWrites = false)
     {
-        throw new NotImplementedException();
+        return provider switch
+        {
+            DatabaseProvider.Sqlite => AddDatabase(new SqliteConnectionFactory(connectionString), allowWrites),
+            _ => throw new NotSupportedException($"Provider {provider} requires the DotnetMcpToolkit.Database.{provider} package"),
+        };
+    }
+
+    /// <summary>
+    /// Adds the database tool pack (<c>sql_query</c>) over a custom connection factory.
+    /// </summary>
+    /// <param name="factory">Source of database connections.</param>
+    /// <param name="allowWrites">Whether <c>INSERT</c>/<c>UPDATE</c>/<c>DELETE</c>/DDL statements are permitted.</param>
+    /// <returns>This builder, for chaining.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="factory"/> is <see langword="null"/>.</exception>
+    public McpServerBuilder AddDatabase(IDbConnectionFactory factory, bool allowWrites = false)
+    {
+        AddTool(new SqlQueryTool(factory, allowWrites));
+
+        return this;
     }
 
     /// <summary>
