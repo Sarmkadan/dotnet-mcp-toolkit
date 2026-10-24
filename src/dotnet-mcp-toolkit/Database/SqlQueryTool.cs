@@ -1,7 +1,6 @@
 using System.Data.Common;
 using System.Globalization;
 using System.Text.Json;
-using DotnetMcpToolkit.FileSystem;
 
 namespace DotnetMcpToolkit.Database;
 
@@ -38,7 +37,9 @@ public sealed class SqlQueryTool : IMcpTool
         """).RootElement.Clone();
 
     private const int _maxRowsLimit = 5000;
+    private const int _maxSqlLength = 100_000;
     private const int _defaultTimeoutSeconds = 30;
+    private static readonly TimeSpan _maxCommandTimeout = TimeSpan.FromMinutes(10);
 
     private readonly IDbConnectionFactory _factory;
     private readonly bool _allowWrites;
@@ -51,9 +52,9 @@ public sealed class SqlQueryTool : IMcpTool
     /// <param name="factory">Source of database connections.</param>
     /// <param name="allowWrites">When <see langword="false"/>, only single read-only statements are executed.</param>
     /// <param name="maxRows">Default row limit for result sets, between 1 and 5000.</param>
-    /// <param name="commandTimeout">Time limit for each command; <see langword="null"/> means 30 seconds.</param>
+    /// <param name="commandTimeout">Time limit for each command, above zero and at most 10 minutes; <see langword="null"/> means 30 seconds.</param>
     /// <exception cref="ArgumentNullException"><paramref name="factory"/> is <see langword="null"/>.</exception>
-    /// <exception cref="ArgumentOutOfRangeException"><paramref name="maxRows"/> is outside 1-5000, or <paramref name="commandTimeout"/> is not positive.</exception>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="maxRows"/> is outside 1-5000, or <paramref name="commandTimeout"/> is not in (0, 10 minutes].</exception>
     public SqlQueryTool(IDbConnectionFactory factory, bool allowWrites, int maxRows = 500, TimeSpan? commandTimeout = null)
     {
         ArgumentNullException.ThrowIfNull(factory);
@@ -62,6 +63,7 @@ public sealed class SqlQueryTool : IMcpTool
 
         var timeout = commandTimeout ?? TimeSpan.FromSeconds(_defaultTimeoutSeconds);
         ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(timeout, TimeSpan.Zero);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(timeout, _maxCommandTimeout);
 
         _factory = factory;
         _allowWrites = allowWrites;
@@ -81,25 +83,36 @@ public sealed class SqlQueryTool : IMcpTool
     /// <inheritdoc />
     public async Task<McpToolResult> InvokeAsync(JsonElement? arguments, CancellationToken cancellationToken = default)
     {
-        var sql = ToolArguments.GetString(arguments, "sql");
+        if (ToolArgumentValidation.RequireObjectArguments(arguments) is { } argumentsError)
+        {
+            return argumentsError;
+        }
+
+        if (ToolArgumentValidation.RequireString(arguments, "sql", out var sql) is { } sqlError)
+        {
+            return sqlError;
+        }
 
         if (string.IsNullOrWhiteSpace(sql))
         {
-            return McpToolResult.Error("Missing required argument: sql");
+            return McpToolResult.Error("Argument 'sql' must not be blank");
         }
 
-        var maxRows = ToolArguments.GetInt32(arguments, "maxRows") ?? _maxRows;
-
-        if (maxRows < 1 || maxRows > _maxRowsLimit)
+        if (ToolArgumentValidation.RequireMaxLength(sql, "sql", _maxSqlLength) is { } lengthError)
         {
-            return McpToolResult.Error($"maxRows must be between 1 and {_maxRowsLimit}");
+            return lengthError;
+        }
+
+        if (ToolArgumentValidation.OptionalInt32(arguments, "maxRows", 1, _maxRowsLimit, _maxRows, out var maxRows) is { } maxRowsError)
+        {
+            return maxRowsError;
         }
 
         var (bindings, bindingError) = ParseParameters(arguments);
 
         if (bindingError is not null)
         {
-            return McpToolResult.Error(bindingError);
+            return bindingError;
         }
 
         try
@@ -138,6 +151,10 @@ public sealed class SqlQueryTool : IMcpTool
             return await ReadResultAsync(reader, maxRows, cancellationToken).ConfigureAwait(false);
         }
         catch (DbException ex)
+        {
+            return McpToolResult.Error(ex.Message);
+        }
+        catch (TimeoutException ex)
         {
             return McpToolResult.Error(ex.Message);
         }
@@ -192,68 +209,75 @@ public sealed class SqlQueryTool : IMcpTool
         };
     }
 
-    private static (List<KeyValuePair<string, object>> Bindings, string? Error) ParseParameters(JsonElement? arguments)
+    private static (List<KeyValuePair<string, object>> Bindings, McpToolResult? Error) ParseParameters(JsonElement? arguments)
     {
         var bindings = new List<KeyValuePair<string, object>>();
 
-        if (arguments is not { ValueKind: JsonValueKind.Object } args ||
-            !args.TryGetProperty("parameters", out var parameters))
+        // A JSON null counts as absent, the same as for the other optional arguments.
+        if (!ToolArgumentValidation.HasArgument(arguments, "parameters"))
         {
             return (bindings, null);
         }
 
-        if (parameters.ValueKind == JsonValueKind.Null)
-        {
-            return (bindings, null);
-        }
+        var parameters = arguments!.Value.GetProperty("parameters");
 
         if (parameters.ValueKind != JsonValueKind.Object)
         {
-            return ([], "parameters must be an object");
+            return ([], McpToolResult.Error("parameters must be a JSON object"));
         }
 
         foreach (var property in parameters.EnumerateObject())
         {
-            var value = ToParameterValue(property.Value);
-
-            if (value is null)
+            if (!DatabasePatterns.ParameterName().IsMatch(property.Name))
             {
-                return ([], $"Parameter '{property.Name}' must be a string, number, boolean or null");
+                return ([], McpToolResult.Error($"parameter name '{property.Name}' is invalid: use 1-64 letters, digits or underscores, starting with a letter or underscore"));
             }
 
-            var name = property.Name.StartsWith('@') ? property.Name : "@" + property.Name;
-            bindings.Add(new KeyValuePair<string, object>(name, value));
+            if (!TryGetScalar(property.Value, out var value))
+            {
+                return ([], McpToolResult.Error($"parameter '{property.Name}' must be a scalar"));
+            }
+
+            // Names go into Parameters, never into the SQL text.
+            bindings.Add(new KeyValuePair<string, object>("@" + property.Name, value));
         }
 
         return (bindings, null);
     }
 
-    private static object? ToParameterValue(JsonElement element)
+    private static bool TryGetScalar(JsonElement element, out object value)
     {
         switch (element.ValueKind)
         {
             case JsonValueKind.String:
-                return element.GetString();
+                value = element.GetString()!;
+                return true;
 
             case JsonValueKind.Number:
                 if (element.TryGetInt64(out var integer))
                 {
-                    return integer;
+                    value = integer;
+                    return true;
                 }
 
-                return element.GetDouble();
+                value = element.GetDouble();
+                return true;
 
             case JsonValueKind.True:
+                value = true;
                 return true;
 
             case JsonValueKind.False:
-                return false;
+                value = false;
+                return true;
 
             case JsonValueKind.Null:
-                return DBNull.Value;
+                value = DBNull.Value;
+                return true;
 
             default:
-                return null;
+                value = DBNull.Value;
+                return false;
         }
     }
 }

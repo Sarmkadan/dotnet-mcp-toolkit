@@ -52,6 +52,11 @@ public sealed class SqlExplainTool : IMcpTool
     /// <inheritdoc />
     public async Task<McpToolResult> InvokeAsync(JsonElement? arguments, CancellationToken cancellationToken = default)
     {
+        if (ToolArgumentValidation.RequireObjectArguments(arguments) is { } argumentsError)
+        {
+            return argumentsError;
+        }
+
         var sql = ToolArguments.GetString(arguments, "sql");
 
         if (string.IsNullOrWhiteSpace(sql))
@@ -59,6 +64,8 @@ public sealed class SqlExplainTool : IMcpTool
             return McpToolResult.Error("Missing required argument: sql");
         }
 
+        // EnsureAllowed only passes statements that classify as Read, so Write, Ddl and Unknown fail here,
+        // before any connection is opened.
         try
         {
             SqlStatementGuard.EnsureAllowed(sql, allowWrites: false);
@@ -101,6 +108,10 @@ public sealed class SqlExplainTool : IMcpTool
             return McpToolResult.Text(string.Join('\n', lines));
         }
         catch (DbException ex)
+        {
+            return McpToolResult.Error(ex.Message);
+        }
+        catch (TimeoutException ex)
         {
             return McpToolResult.Error(ex.Message);
         }

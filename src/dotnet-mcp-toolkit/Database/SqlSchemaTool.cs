@@ -2,7 +2,6 @@ using System.Data;
 using System.Data.Common;
 using System.Globalization;
 using System.Text.Json;
-using DotnetMcpToolkit.FileSystem;
 
 namespace DotnetMcpToolkit.Database;
 
@@ -61,12 +60,32 @@ public sealed class SqlSchemaTool : IMcpTool
     /// <inheritdoc />
     public async Task<McpToolResult> InvokeAsync(JsonElement? arguments, CancellationToken cancellationToken = default)
     {
-        var table = ToolArguments.GetString(arguments, "table");
-        var includeSystem = ToolArguments.GetBoolean(arguments, "includeSystem");
-
-        if (table is not null && string.IsNullOrWhiteSpace(table))
+        if (ToolArgumentValidation.RequireObjectArguments(arguments) is { } argumentsError)
         {
-            return McpToolResult.Error("table must not be empty when provided");
+            return argumentsError;
+        }
+
+        string? table = null;
+
+        if (ToolArgumentValidation.HasArgument(arguments, "table"))
+        {
+            if (ToolArgumentValidation.RequireString(arguments, "table", out var tableName) is { } tableError)
+            {
+                return tableError;
+            }
+
+            // The pattern keeps the name to plain identifiers; the PRAGMA statements still quote it as a second layer.
+            if (!DatabasePatterns.TableName().IsMatch(tableName))
+            {
+                return McpToolResult.Error("table must start with a letter or underscore and contain only letters, digits, underscores, spaces, dots, dashes or dollar signs (at most 128 characters)");
+            }
+
+            table = tableName;
+        }
+
+        if (ToolArgumentValidation.OptionalBoolean(arguments, "includeSystem", defaultValue: false, out var includeSystem) is { } includeError)
+        {
+            return includeError;
         }
 
         try
@@ -87,6 +106,10 @@ public sealed class SqlSchemaTool : IMcpTool
             return McpToolResult.Json(new { tables });
         }
         catch (DbException ex)
+        {
+            return McpToolResult.Error(ex.Message);
+        }
+        catch (TimeoutException ex)
         {
             return McpToolResult.Error(ex.Message);
         }

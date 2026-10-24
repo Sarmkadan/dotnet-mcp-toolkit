@@ -135,25 +135,25 @@ public sealed class SqlSchemaToolTests : IDisposable
     }
 
     [Fact]
-    public async Task InvokeAsync_TableNameWithQuote_IsDescribed()
+    public async Task InvokeAsync_TableNameWithQuote_ReturnsError()
     {
         var tool = CreateTool();
 
         var result = await tool.InvokeAsync(Args("""{"table": "we\"ird"}"""));
 
-        Assert.False(result.IsError);
-        Assert.Equal(2, OnlyTable(result).GetProperty("columns").GetArrayLength());
+        Assert.True(result.IsError);
+        Assert.Contains("table must start", result.Content[0].Text);
     }
 
     [Fact]
-    public async Task InvokeAsync_TableNameInjectionAttempt_ReturnsDoesNotExistAndLeavesSchemaIntact()
+    public async Task InvokeAsync_TableNameInjectionAttempt_ReturnsErrorAndLeavesSchemaIntact()
     {
         var tool = CreateTool();
 
         var result = await tool.InvokeAsync(Args("""{"table": "x\" ); DROP TABLE books; --"}"""));
 
         Assert.True(result.IsError);
-        Assert.Contains("does not exist", result.Content[0].Text);
+        Assert.Contains("table must start", result.Content[0].Text);
 
         var intact = await tool.InvokeAsync(Args("""{"table": "books"}"""));
         Assert.False(intact.IsError);
